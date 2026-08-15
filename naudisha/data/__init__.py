@@ -8,6 +8,8 @@ dataset specifications, and vector conversion utilities.
 from naudisha.data.weather_provider import (
     WeatherProvider,
     MockWeatherProvider,
+    ConditionRequest,
+    BatchCapableProvider,
 )
 from naudisha.data.copernicus_schema import (
     CopernicusDatasetSpec,
@@ -39,6 +41,8 @@ from naudisha.data.composite_provider import (
 __all__ = [
     "WeatherProvider",
     "MockWeatherProvider",
+    "ConditionRequest",
+    "BatchCapableProvider",
     "CopernicusMarineProvider",
     "CopernicusProviderError",
     "CopernicusAuthenticationError",

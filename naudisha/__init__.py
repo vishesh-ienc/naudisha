@@ -31,6 +31,8 @@ from naudisha.routing.dstar_lite import DStarLite
 from naudisha.data import (
     WeatherProvider,
     MockWeatherProvider,
+    ConditionRequest,
+    BatchCapableProvider,
     CopernicusMarineProvider,
     CopernicusProviderError,
     CopernicusAuthenticationError,
@@ -62,6 +64,8 @@ __all__ = [
     "DStarLite",
     "WeatherProvider",
     "MockWeatherProvider",
+    "ConditionRequest",
+    "BatchCapableProvider",
     "CopernicusMarineProvider",
     "CopernicusProviderError",
     "CopernicusAuthenticationError",

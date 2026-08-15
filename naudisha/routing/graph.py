@@ -20,7 +20,7 @@ from naudisha.core.models import (
     SegmentEvaluation,
 )
 from naudisha.cost.model import CostModel
-from naudisha.data.weather_provider import WeatherProvider
+from naudisha.data.weather_provider import WeatherProvider, BatchCapableProvider, ConditionRequest
 
 
 class GridEnvironmentUpdateError(Exception):
@@ -493,6 +493,15 @@ class GeographicGridGraph:
         Populates environmental conditions across all navigable directed edges in the grid
         by querying the injected or supplied WeatherProvider at each edge's geographic midpoint.
 
+        Batch path (preferred):
+            If the provider implements BatchCapableProvider, all midpoint requests are
+            collected into a single batch call, yielding O(1) or O(T) remote requests
+            for a grid with T distinct timestamps (typically 1).
+
+        Fallback path:
+            Providers that do not implement BatchCapableProvider are served using the
+            original per-edge loop, preserving full backward compatibility.
+
         Args:
             timestamp: Explicit observation/forecast UTC timestamp (string or datetime).
             provider: Optional WeatherProvider (falls back to self.environment_provider).
@@ -501,7 +510,7 @@ class GeographicGridGraph:
 
         Raises:
             ValueError: If no provider is supplied or configured.
-            GridEnvironmentUpdateError: If the provider fails to fetch valid conditions for an edge.
+            GridEnvironmentUpdateError: If the provider fails to fetch valid conditions.
         """
         active_provider = provider or self.environment_provider
         if active_provider is None:
@@ -513,18 +522,61 @@ class GeographicGridGraph:
         vessel = ship or self.default_ship
         w = weights or self.default_weights
 
-        for (source_id, target_id), edge in self._edges.items():
-            # Skip non-navigable edges (e.g. landmasses/obstacles) to avoid unnecessary external queries
+        # Identify all navigable edges and compute their midpoints
+        navigable_edges: List[Tuple[str, str]] = []
+        non_navigable_edges: List[Tuple[str, str]] = []
+        for (source_id, target_id) in list(self._edges.keys()):
             source_node = self._nodes.get(source_id)
             target_node = self._nodes.get(target_id)
-            if not source_node or not target_node or not source_node.is_navigable or not target_node.is_navigable:
-                edge.is_navigable = False
-                edge.cost = math.inf
-                edge.evaluation = None
-                continue
+            if (
+                not source_node or not target_node
+                or not source_node.is_navigable or not target_node.is_navigable
+            ):
+                non_navigable_edges.append((source_id, target_id))
+            else:
+                navigable_edges.append((source_id, target_id))
 
+        # Mark non-navigable edges immediately
+        for source_id, target_id in non_navigable_edges:
+            edge = self._edges[(source_id, target_id)]
+            edge.is_navigable = False
+            edge.cost = math.inf
+            edge.evaluation = None
+
+        if not navigable_edges:
+            return
+
+        # ---- Batch path ----
+        if isinstance(active_provider, BatchCapableProvider):
+            requests = [
+                ConditionRequest(
+                    lat=self.get_edge_midpoint(src, tgt)[0],
+                    lon=self.get_edge_midpoint(src, tgt)[1],
+                    timestamp=timestamp,
+                )
+                for src, tgt in navigable_edges
+            ]
+            try:
+                batch_results = active_provider.fetch_conditions_batch(requests)
+            except Exception as exc:
+                raise GridEnvironmentUpdateError(
+                    f"Batch environmental fetch failed during populate_environment(): {exc}"
+                ) from exc
+
+            for (source_id, target_id), req in zip(navigable_edges, requests):
+                env = batch_results.get(req)
+                if env is None:
+                    raise GridEnvironmentUpdateError(
+                        f"Batch fetch returned no result for edge '{source_id}' -> '{target_id}'."
+                    )
+                edge = self._edges[(source_id, target_id)]
+                edge.env_data = env
+                self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
+            return
+
+        # ---- Per-edge fallback path (providers without BatchCapableProvider) ----
+        for source_id, target_id in navigable_edges:
             mid_lat, mid_lon = self.get_edge_midpoint(source_id, target_id)
-
             try:
                 env = active_provider.fetch_conditions(lat=mid_lat, lon=mid_lon, timestamp=timestamp)
             except Exception as exc:
@@ -532,7 +584,7 @@ class GeographicGridGraph:
                     f"Failed to fetch environmental data for edge '{source_id}' -> '{target_id}' "
                     f"at sampling midpoint ({mid_lat:.4f}N, {mid_lon:.4f}E) for timestamp '{timestamp}': {exc}"
                 ) from exc
-
+            edge = self._edges[(source_id, target_id)]
             edge.env_data = env
             self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
 
@@ -552,6 +604,13 @@ class GeographicGridGraph:
         environmental state. The routing layer uses this to call dstar.update_edge() on exactly
         the edges whose costs changed, without rebuilding the graph or resetting planner state.
 
+        Batch path (preferred for multi-edge refresh):
+            If provider implements BatchCapableProvider and len(edges) > 1,
+            all midpoint requests are collected and served by one bbox call.
+
+        Fallback path:
+            Per-edge fetching for providers without BatchCapableProvider, or single-edge refresh.
+
         Args:
             edges: List of directed edge pairs [(source_id, target_id), ...].
             timestamp: Explicit observation/forecast UTC timestamp.
@@ -565,8 +624,6 @@ class GeographicGridGraph:
         Raises:
             KeyError: If any specified edge does not exist in the graph.
             GridEnvironmentUpdateError: If the provider fails for any refreshed edge.
-                On failure the graph is left in its pre-refresh state for the failing edge;
-                results for previously processed edges in the same call are still returned.
         """
         active_provider = provider or self.environment_provider
         if active_provider is None:
@@ -580,10 +637,82 @@ class GeographicGridGraph:
 
         results: List[EdgeRefreshResult] = []
 
+        # Validate all edges exist upfront
+        for source_id, target_id in edges:
+            if (source_id, target_id) not in self._edges:
+                raise KeyError(f"Edge from '{source_id}' to '{target_id}' does not exist in graph.")
+
+        # ---- Batch path for multi-edge refresh with capable provider ----
+        if len(edges) > 1 and isinstance(active_provider, BatchCapableProvider):
+            # Capture pre-refresh state and identify navigable/non-navigable
+            navigable_refresh: List[Tuple[str, str]] = []
+            for source_id, target_id in edges:
+                edge = self._edges[(source_id, target_id)]
+                old_cost = edge.cost
+                old_env = edge.env_data
+                source_node = self._nodes.get(source_id)
+                target_node = self._nodes.get(target_id)
+                if (
+                    not source_node or not target_node
+                    or not source_node.is_navigable or not target_node.is_navigable
+                ):
+                    edge.is_navigable = False
+                    edge.cost = math.inf
+                    edge.evaluation = None
+                    results.append(EdgeRefreshResult(
+                        source_id=source_id,
+                        target_id=target_id,
+                        old_cost=old_cost,
+                        new_cost=math.inf,
+                        old_env=old_env,
+                        new_env=old_env,
+                    ))
+                else:
+                    navigable_refresh.append((source_id, target_id))
+                    # Store pre-refresh state for later
+                    edge._pre_refresh_cost = old_cost
+                    edge._pre_refresh_env = old_env
+
+            if navigable_refresh:
+                requests = [
+                    ConditionRequest(
+                        lat=self.get_edge_midpoint(src, tgt)[0],
+                        lon=self.get_edge_midpoint(src, tgt)[1],
+                        timestamp=timestamp,
+                    )
+                    for src, tgt in navigable_refresh
+                ]
+                try:
+                    batch_results = active_provider.fetch_conditions_batch(requests)
+                except Exception as exc:
+                    raise GridEnvironmentUpdateError(
+                        f"Batch environmental fetch failed during refresh_edges(): {exc}"
+                    ) from exc
+
+                for (source_id, target_id), req in zip(navigable_refresh, requests):
+                    edge = self._edges[(source_id, target_id)]
+                    old_cost = edge._pre_refresh_cost
+                    old_env = edge._pre_refresh_env
+                    env = batch_results.get(req)
+                    if env is None:
+                        raise GridEnvironmentUpdateError(
+                            f"Batch fetch returned no result for edge '{source_id}' -> '{target_id}'."
+                        )
+                    edge.env_data = env
+                    new_cost = self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
+                    results.append(EdgeRefreshResult(
+                        source_id=source_id,
+                        target_id=target_id,
+                        old_cost=old_cost,
+                        new_cost=new_cost,
+                        old_env=old_env,
+                        new_env=env,
+                    ))
+            return results
+
+        # ---- Per-edge fallback path ----
         for source_id, target_id in edges:
             edge = self._edges.get((source_id, target_id))
-            if not edge:
-                raise KeyError(f"Edge from '{source_id}' to '{target_id}' does not exist in graph.")
 
             # Capture pre-refresh state
             old_cost = edge.cost
@@ -610,7 +739,7 @@ class GeographicGridGraph:
             try:
                 env = active_provider.fetch_conditions(lat=mid_lat, lon=mid_lon, timestamp=timestamp)
             except Exception as exc:
-                # Graph state is NOT modified on failure — old_cost and old_env are preserved.
+                # Graph state is NOT modified on failure -- old_cost and old_env are preserved.
                 raise GridEnvironmentUpdateError(
                     f"Failed to refresh environmental data for edge '{source_id}' -> '{target_id}' "
                     f"at sampling midpoint ({mid_lat:.4f}N, {mid_lon:.4f}E) for timestamp '{timestamp}': {exc}"

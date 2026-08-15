@@ -310,6 +310,79 @@ No simulated values are presented as real observations.
 
 ---
 
+### Phase 7.5: Batch CMEMS Environmental Sampling ✅ (Complete)
+
+**Goal**: Reduce environmental data acquisition from O(N) network requests per grid edge to O(1) bounding-box queries, without changing routing mathematics.
+
+#### Architecture Change
+
+```
+BEFORE (sequential):
+    80 edges → 80 × (1 currents + 1 waves) = 160 CMEMS requests → ~8-10 minutes
+
+AFTER (batch):
+    80 edges → bounding box → 1 currents + 1 waves = 2 CMEMS requests → ~15-30 seconds
+```
+
+#### New Abstractions
+
+| Type | Location | Purpose |
+|---|---|---|
+| `ConditionRequest` | `weather_provider.py` | Frozen dataclass: `(lat, lon, timestamp)` — hashable dict key |
+| `BatchCapableProvider` | `weather_provider.py` | Separate ABC with `fetch_conditions_batch()` — not bolted onto `WeatherProvider` |
+
+**Capability detection**: `isinstance(provider, BatchCapableProvider)` in `graph.py`.
+Existing `WeatherProvider` is **unchanged** — full backward compatibility.
+
+#### Provider Implementations
+
+| Provider | Batch Strategy |
+|---|---|
+| `CopernicusMarineProvider` | Bounding-box subset query: `min/max(lats/lons) ± spatial_delta_deg` → 1 currents + 1 waves request → local L2 nearest-point extraction per midpoint |
+| `CompositeEnvironmentalProvider` | Delegates CMEMS batch to `CopernicusMarineProvider.fetch_conditions_batch()`, deduplicates Open-Meteo by `round(lat,2), round(lon,2)` cell key (~4-8 unique HTTP requests for 80 midpoints) |
+
+#### Temporal Bucketing
+
+Requests are grouped by hour-bucket (`strftime("%Y-%m-%dT%H")`). Each bucket produces one pair of CMEMS requests. For typical grid population (single timestamp), this is exactly 1 bucket → 2 CMEMS calls total.
+
+#### Test Results: 122/122 Offline Tests Pass
+
+22 new tests in `tests/test_copernicus_batch_provider.py`:
+
+| # | Coverage |
+|---|---|
+| 1 | `ConditionRequest` dataclass creation and hashability |
+| 2 | Bounding box: `min(lats) - margin` to `max(lats) + margin` |
+| 3 | Temporal range: `bucket_dt ± temporal_delta_hours` |
+| 4 | ONE currents request for N points (same timestamp) |
+| 5 | ONE waves request for N points (same timestamp) |
+| 6 | Nearest-point extraction by L2 distance |
+| 7 | Multiple coordinates receive correct nearest values |
+| 8 | Multiple timestamps bucketed into separate CMEMS requests |
+| 9-12 | Missing/NaN current and wave data error handling |
+| 13 | Missing variable column error |
+| 14 | Authentication failure maps to `CopernicusAuthenticationError` |
+| 15 | Network failure maps to `CopernicusProviderError` |
+| 16 | Cache prevents duplicate reader calls |
+| 17 | Empty request list returns empty dict |
+| 18 | Single-point batch matches `fetch_conditions()` |
+| 19 | Coordinate validation |
+| **20** | **REGRESSION/EQUIVALENCE: batch and per-edge produce identical edge costs** |
+| **21** | **Graph batch: 24 edges → 2 reader calls (not 24×2)** |
+| 22 | Non-batch provider falls back to per-edge path |
+
+**Test count progression**: 100 → **122** (22 new, 0 regressions)
+
+#### Benchmark Results (Deterministic)
+
+| Grid | Edges | Old Requests | New Requests | Reduction | Equivalence |
+|---|---|---|---|---|---|
+| 3×3 | 24 | 48 | 2 | 24× | ✅ All costs match |
+| 5×5 | 80 | 160 | 2 | 80× | ✅ All costs match |
+| 10×10 | 360 | 720 | 2 | 360× | ✅ All costs match |
+
+---
+
 ### Phase 8: Interactive Visual Dashboard & API (Upcoming) ⏳
 - REST/WebSocket API for route planning requests and real-time voyage monitoring.
 - Interactive map frontend displaying vessel trajectory, weather overlays, and dynamic route adjustments.

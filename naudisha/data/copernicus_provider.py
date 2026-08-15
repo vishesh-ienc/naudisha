@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from naudisha.core.models import EnvironmentalData
-from naudisha.data.weather_provider import WeatherProvider
+from naudisha.data.weather_provider import WeatherProvider, BatchCapableProvider, ConditionRequest
 from naudisha.data.copernicus_schema import (
     CMEMS_OCEAN_CURRENTS_SPEC,
     CMEMS_WAVES_SPEC,
@@ -56,10 +56,17 @@ def _normalize_utc_datetime(timestamp: Union[datetime, str]) -> datetime:
     return dt
 
 
-class CopernicusMarineProvider(WeatherProvider):
+class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
     """
     Oceanographic data provider fetching real hydrodynamic currents and wave spectra
     from Copernicus Marine Service (CMEMS).
+
+    Inherits both WeatherProvider (for single-point fetch_conditions) and
+    BatchCapableProvider (for efficient multi-point fetch_conditions_batch).
+
+    Batch strategy:
+        Many requested points → bounding-box subset query (1 currents + 1 waves request)
+        → local nearest-point extraction → N EnvironmentalData results.
 
     Data Flow:
         CMEMS Physics API (uo, vo) ──┐
@@ -70,7 +77,7 @@ class CopernicusMarineProvider(WeatherProvider):
         currents_dataset_id: CMEMS dataset identifier for ocean physics/currents.
         waves_dataset_id: CMEMS dataset identifier for spectral waves.
         enable_cache: Enables in-memory caching of fetched observations.
-        spatial_delta_deg: Bounding box padding for targeted point requests (default 0.1°).
+        spatial_delta_deg: Bounding box padding for point and batch requests (default 0.1°).
         temporal_delta_hours: Time window search radius (default 3 hours).
     """
 
@@ -299,3 +306,315 @@ class CopernicusMarineProvider(WeatherProvider):
             self._cache[cache_key] = env
 
         return env
+
+    # -----------------------------------------------------------------------
+    # Batch fetch (BatchCapableProvider implementation)
+    # -----------------------------------------------------------------------
+
+    def _execute_bbox_subset_query(
+        self,
+        dataset_id: str,
+        variables: List[str],
+        lat_min: float,
+        lat_max: float,
+        lon_min: float,
+        lon_max: float,
+        start_dt: datetime,
+        end_dt: datetime,
+        depth_level: Optional[float] = None,
+    ) -> Any:
+        """
+        Executes a bounding-box subset query covering multiple geographic points.
+
+        Unlike _execute_subset_query (which adds spatial_delta around a single point),
+        this method takes explicit bbox bounds already computed by the caller.
+        The same credential checks, error mapping, and disable_progress_bar settings
+        are applied as in the per-point method.
+
+        Args:
+            dataset_id: CMEMS dataset identifier.
+            variables: List of variable names to fetch.
+            lat_min, lat_max: Latitude bounds (degrees).
+            lon_min, lon_max: Longitude bounds (degrees).
+            start_dt, end_dt: UTC datetime range.
+            depth_level: Optional depth (m) to constrain the query.
+
+        Returns:
+            DataFrame with all rows within the bounding box and time range.
+        """
+        import os
+        from pathlib import Path
+
+        has_env_creds = bool(
+            os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")
+            and os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD")
+        )
+        cred_dir = Path.home() / ".copernicusmarine"
+        has_file_creds = cred_dir.exists() and any(cred_dir.iterdir())
+
+        if self._reader_fn is None and not (has_env_creds or has_file_creds):
+            raise CopernicusAuthenticationError(
+                "No local Copernicus Marine credentials found. "
+                "Please run 'copernicusmarine login' to authenticate."
+            )
+
+        reader = self._get_reader()
+
+        query_kwargs: Dict[str, Any] = {
+            "dataset_id": dataset_id,
+            "variables": variables,
+            "minimum_latitude": lat_min,
+            "maximum_latitude": lat_max,
+            "minimum_longitude": lon_min,
+            "maximum_longitude": lon_max,
+            "start_datetime": start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "end_datetime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "disable_progress_bar": True,
+        }
+
+        if depth_level is not None:
+            query_kwargs["minimum_depth"] = depth_level
+            query_kwargs["maximum_depth"] = depth_level
+
+        try:
+            df = reader(**query_kwargs)
+            return df
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if "credentials" in exc_str or "unauthorized" in exc_str or "login" in exc_str or "forbidden" in exc_str:
+                raise CopernicusAuthenticationError(
+                    f"Copernicus Marine authentication failed during batch query of '{dataset_id}'. Details: {exc}"
+                ) from exc
+            if "out of dataset bounds" in exc_str or "not found" in exc_str:
+                raise CopernicusDataUnavailableError(
+                    f"Batch bounding box [{lat_min:.3f}N-{lat_max:.3f}N, {lon_min:.3f}E-{lon_max:.3f}E] "
+                    f"is out of bounds for dataset '{dataset_id}'. Details: {exc}"
+                ) from exc
+            raise CopernicusProviderError(
+                f"Failed to batch-query Copernicus Marine dataset '{dataset_id}': {exc}"
+            ) from exc
+
+    def _extract_nearest_from_batch_df(
+        self,
+        df: Any,
+        var_name: str,
+        dataset_id: str,
+        target_lat: float,
+        target_lon: float,
+    ) -> float:
+        """
+        Extracts the value of var_name from the closest row to (target_lat, target_lon)
+        in a multi-row batch DataFrame.
+
+        Nearest-point selection uses squared Euclidean distance in degree space:
+            d^2 = (df.latitude - target_lat)^2 + (df.longitude - target_lon)^2
+
+        This is valid for the small geographic extents used in NauDisha grids
+        (typically < 5° x 5°) where degree-space distance is a sufficient proxy for
+        geographic proximity and avoids expensive spherical distance computation.
+
+        Args:
+            df: DataFrame returned from _execute_bbox_subset_query.
+            var_name: CMEMS variable column to extract.
+            dataset_id: Dataset identifier (for error messages).
+            target_lat, target_lon: Target geographic coordinates.
+
+        Returns:
+            float: Extracted scalar value.
+
+        Raises:
+            CopernicusDataUnavailableError: If df is empty, column missing, or nearest is NaN.
+        """
+        if df is None or (hasattr(df, "empty") and df.empty):
+            raise CopernicusDataUnavailableError(
+                f"Empty batch response from '{dataset_id}' — no data in bounding box."
+            )
+
+        if var_name not in df.columns:
+            raise CopernicusDataUnavailableError(
+                f"Variable '{var_name}' not found in batch response columns: {list(df.columns)} "
+                f"for dataset '{dataset_id}'."
+            )
+
+        # Identify latitude/longitude columns — copernicusmarine uses 'latitude'/'longitude'
+        lat_col = next((c for c in df.columns if c.lower() in ("latitude", "lat")), None)
+        lon_col = next((c for c in df.columns if c.lower() in ("longitude", "lon")), None)
+
+        if lat_col is None or lon_col is None:
+            # Fallback: use the first valid non-NaN row if spatial columns are unavailable
+            valid_series = df[var_name].dropna()
+            if valid_series.empty:
+                raise CopernicusDataUnavailableError(
+                    f"Variable '{var_name}' contains only NaN values in batch response for '{dataset_id}'."
+                )
+            val = float(valid_series.iloc[0])
+        else:
+            # Drop rows where variable is NaN
+            valid_df = df.dropna(subset=[var_name])
+            if valid_df.empty:
+                raise CopernicusDataUnavailableError(
+                    f"Variable '{var_name}' contains only NaN values in batch response for "
+                    f"dataset '{dataset_id}' near ({target_lat:.4f}N, {target_lon:.4f}E)."
+                )
+            # Find nearest row by squared Euclidean distance in degree space
+            dist_sq = (valid_df[lat_col] - target_lat) ** 2 + (valid_df[lon_col] - target_lon) ** 2
+            nearest_idx = dist_sq.idxmin()
+            val = float(valid_df.loc[nearest_idx, var_name])
+
+        if math.isnan(val):
+            raise CopernicusDataUnavailableError(
+                f"NaN value for '{var_name}' nearest to ({target_lat:.4f}N, {target_lon:.4f}E) "
+                f"in dataset '{dataset_id}'."
+            )
+
+        return val
+
+    def fetch_conditions_batch(
+        self,
+        requests: List["ConditionRequest"],
+    ) -> Dict["ConditionRequest", EnvironmentalData]:
+        """
+        Fetches environmental conditions for multiple geographic points using spatial
+        bounding-box queries, dramatically reducing the number of remote CMEMS API calls.
+
+        Batch strategy:
+            N requested points (same timestamp) → bounding box →
+            1 currents subset request + 1 waves subset request →
+            local nearest-point extraction for each point →
+            N EnvironmentalData results.
+
+        For different timestamps, requests are grouped by temporal hour-bucket so that
+        points sharing the same hour-bucket are served by a single pair of requests.
+
+        Network request count:
+            Old: N points × 2 datasets = 2N requests
+            New: T timestamp-buckets × 2 datasets = 2T requests  (T << N for grids)
+
+        Args:
+            requests: Sequence of ConditionRequest objects.
+
+        Returns:
+            Dict mapping each ConditionRequest to its EnvironmentalData.
+
+        Raises:
+            ValueError: If any request has invalid lat/lon.
+            CopernicusAuthenticationError: If CMEMS authentication fails.
+            CopernicusDataUnavailableError: If a point or variable has no data.
+            CopernicusProviderError: For other CMEMS failures.
+        """
+        if not requests:
+            return {}
+
+        # Validate all coordinates upfront
+        for req in requests:
+            if not (-90.0 <= req.lat <= 90.0):
+                raise ValueError(f"Latitude {req.lat} is out of valid range [-90.0, 90.0].")
+            if not (-180.0 <= req.lon <= 180.0):
+                raise ValueError(f"Longitude {req.lon} is out of valid range [-180.0, 180.0].")
+
+        results: Dict["ConditionRequest", EnvironmentalData] = {}
+
+        # --- Check cache for all requests first ---
+        uncached: List["ConditionRequest"] = []
+        for req in requests:
+            dt_utc = _normalize_utc_datetime(req.timestamp)
+            cache_key = (round(req.lat, 2), round(req.lon, 2), dt_utc.strftime("%Y-%m-%dT%H"))
+            if self.enable_cache and cache_key in self._cache:
+                results[req] = self._cache[cache_key]
+            else:
+                uncached.append(req)
+
+        if not uncached:
+            return results
+
+        # --- Group uncached requests by temporal hour-bucket ---
+        from collections import defaultdict
+        bucket_map: Dict[str, List["ConditionRequest"]] = defaultdict(list)
+        for req in uncached:
+            dt_utc = _normalize_utc_datetime(req.timestamp)
+            bucket_key = dt_utc.strftime("%Y-%m-%dT%H")
+            bucket_map[bucket_key].append(req)
+
+        # --- Process each temporal bucket with ONE currents + ONE waves request ---
+        for bucket_key, bucket_requests in bucket_map.items():
+            lats = [req.lat for req in bucket_requests]
+            lons = [req.lon for req in bucket_requests]
+
+            # Compute bounding box with safety margin for nearest selection
+            lat_min = min(lats) - self.spatial_delta_deg
+            lat_max = max(lats) + self.spatial_delta_deg
+            lon_min = min(lons) - self.spatial_delta_deg
+            lon_max = max(lons) + self.spatial_delta_deg
+
+            # Use the bucket representative time ± temporal_delta_hours
+            bucket_dt = _normalize_utc_datetime(bucket_requests[0].timestamp)
+            start_dt = bucket_dt - timedelta(hours=self.temporal_delta_hours)
+            end_dt = bucket_dt + timedelta(hours=self.temporal_delta_hours)
+
+            # ONE currents request for the entire bucket
+            df_cur = self._execute_bbox_subset_query(
+                dataset_id=self.currents_dataset_id,
+                variables=["uo", "vo"],
+                lat_min=lat_min,
+                lat_max=lat_max,
+                lon_min=lon_min,
+                lon_max=lon_max,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                depth_level=CMEMS_OCEAN_CURRENTS_SPEC.depth_level,
+            )
+
+            # ONE waves request for the entire bucket
+            df_wav = self._execute_bbox_subset_query(
+                dataset_id=self.waves_dataset_id,
+                variables=["VHM0", "VMDR", "VTPK"],
+                lat_min=lat_min,
+                lat_max=lat_max,
+                lon_min=lon_min,
+                lon_max=lon_max,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                depth_level=None,
+            )
+
+            # Extract nearest value for each requested point from the batch DataFrames
+            for req in bucket_requests:
+                dt_utc = _normalize_utc_datetime(req.timestamp)
+                cache_key = (round(req.lat, 2), round(req.lon, 2), dt_utc.strftime("%Y-%m-%dT%H"))
+
+                uo_val = self._extract_nearest_from_batch_df(
+                    df_cur, "uo", self.currents_dataset_id, req.lat, req.lon
+                )
+                vo_val = self._extract_nearest_from_batch_df(
+                    df_cur, "vo", self.currents_dataset_id, req.lat, req.lon
+                )
+                current_speed, current_direction = convert_current_vectors_to_speed_and_direction(
+                    uo_mps=uo_val, vo_mps=vo_val
+                )
+
+                vhm0_val = self._extract_nearest_from_batch_df(
+                    df_wav, "VHM0", self.waves_dataset_id, req.lat, req.lon
+                )
+                vmdr_val = self._extract_nearest_from_batch_df(
+                    df_wav, "VMDR", self.waves_dataset_id, req.lat, req.lon
+                )
+                vtpk_val = self._extract_nearest_from_batch_df(
+                    df_wav, "VTPK", self.waves_dataset_id, req.lat, req.lon
+                )
+
+                env = EnvironmentalData(
+                    timestamp=dt_utc.isoformat(),
+                    wind_speed=None,
+                    wind_direction=None,
+                    wave_height=vhm0_val,
+                    wave_direction=vmdr_val,
+                    wave_period=vtpk_val,
+                    current_speed=current_speed,
+                    current_direction=current_direction,
+                )
+
+                results[req] = env
+                if self.enable_cache:
+                    self._cache[cache_key] = env
+
+        return results
