@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from naudisha.core.models import (
     ShipProfile,
@@ -25,6 +26,31 @@ from naudisha.data.weather_provider import WeatherProvider
 class GridEnvironmentUpdateError(Exception):
     """Raised when an environmental data provider fails during graph initialization or edge refresh."""
     pass
+
+
+@dataclass
+class EdgeRefreshResult:
+    """
+    Records the before-and-after state of a single directed edge after a selective environment refresh.
+
+    Used by the routing layer to determine which edges changed and by how much, so that
+    D* Lite can be notified of exactly the affected source vertices via update_edge() without
+    rebuilding the graph or resetting planner state.
+
+    Attributes:
+        source_id: Origin node ID of the directed edge.
+        target_id: Destination node ID of the directed edge.
+        old_cost: Edge traversal cost before the refresh (math.inf if uninitialized or non-navigable).
+        new_cost: Edge traversal cost after the refresh (math.inf if non-navigable after update).
+        old_env: EnvironmentalData assigned before the refresh (None if uninitialized).
+        new_env: EnvironmentalData assigned after the refresh.
+    """
+    source_id: str
+    target_id: str
+    old_cost: float
+    new_cost: float
+    old_env: Optional[EnvironmentalData]
+    new_env: Optional[EnvironmentalData]
 
 
 @dataclass(frozen=True)
@@ -517,10 +543,14 @@ class GeographicGridGraph:
         provider: Optional[WeatherProvider] = None,
         ship: Optional[ShipProfile] = None,
         weights: Optional[CostWeights] = None,
-    ) -> None:
+    ) -> List[EdgeRefreshResult]:
         """
         Selectively refreshes environmental conditions and recalculates costs in O(1) time
         for a specific subset of directed edges.
+
+        Returns one EdgeRefreshResult per requested edge recording the old and new cost and
+        environmental state. The routing layer uses this to call dstar.update_edge() on exactly
+        the edges whose costs changed, without rebuilding the graph or resetting planner state.
 
         Args:
             edges: List of directed edge pairs [(source_id, target_id), ...].
@@ -529,9 +559,14 @@ class GeographicGridGraph:
             ship: Optional vessel profile (falls back to self.default_ship).
             weights: Optional cost weights (falls back to self.default_weights).
 
+        Returns:
+            List[EdgeRefreshResult]: One result per requested edge with old/new cost and env.
+
         Raises:
             KeyError: If any specified edge does not exist in the graph.
             GridEnvironmentUpdateError: If the provider fails for any refreshed edge.
+                On failure the graph is left in its pre-refresh state for the failing edge;
+                results for previously processed edges in the same call are still returned.
         """
         active_provider = provider or self.environment_provider
         if active_provider is None:
@@ -543,10 +578,16 @@ class GeographicGridGraph:
         vessel = ship or self.default_ship
         w = weights or self.default_weights
 
+        results: List[EdgeRefreshResult] = []
+
         for source_id, target_id in edges:
             edge = self._edges.get((source_id, target_id))
             if not edge:
                 raise KeyError(f"Edge from '{source_id}' to '{target_id}' does not exist in graph.")
+
+            # Capture pre-refresh state
+            old_cost = edge.cost
+            old_env = edge.env_data
 
             source_node = self._nodes.get(source_id)
             target_node = self._nodes.get(target_id)
@@ -554,6 +595,14 @@ class GeographicGridGraph:
                 edge.is_navigable = False
                 edge.cost = math.inf
                 edge.evaluation = None
+                results.append(EdgeRefreshResult(
+                    source_id=source_id,
+                    target_id=target_id,
+                    old_cost=old_cost,
+                    new_cost=math.inf,
+                    old_env=old_env,
+                    new_env=old_env,  # env unchanged when node is non-navigable
+                ))
                 continue
 
             mid_lat, mid_lon = self.get_edge_midpoint(source_id, target_id)
@@ -561,11 +610,23 @@ class GeographicGridGraph:
             try:
                 env = active_provider.fetch_conditions(lat=mid_lat, lon=mid_lon, timestamp=timestamp)
             except Exception as exc:
+                # Graph state is NOT modified on failure — old_cost and old_env are preserved.
                 raise GridEnvironmentUpdateError(
                     f"Failed to refresh environmental data for edge '{source_id}' -> '{target_id}' "
                     f"at sampling midpoint ({mid_lat:.4f}N, {mid_lon:.4f}E) for timestamp '{timestamp}': {exc}"
                 ) from exc
 
             edge.env_data = env
-            self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
+            new_cost = self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
+
+            results.append(EdgeRefreshResult(
+                source_id=source_id,
+                target_id=target_id,
+                old_cost=old_cost,
+                new_cost=new_cost,
+                old_env=old_env,
+                new_env=env,
+            ))
+
+        return results
 

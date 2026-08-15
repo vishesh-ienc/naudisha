@@ -1,136 +1,133 @@
-# Current Prompt: Live Environmental Data Integration into GeographicGridGraph
+# Current Prompt: Dynamic Environmental Replanning (Phase 7)
 
 ## Goal
 
-Make `GeographicGridGraph` capable of being initialized and refreshed using the `CompositeEnvironmentalProvider` so that grid edges receive real environmental conditions automatically, feeding real-world marine data all the way into D* Lite routing — without coupling the routing algorithm to any external API.
-
----
-
-## Architecture After This Prompt
+Connect the live environmental data pipeline to D* Lite's incremental repair engine,
+completing the full dynamic routing loop:
 
 ```
-Copernicus Marine (currents + waves)  ─┐
-                                       ├─→ CompositeEnvironmentalProvider
-Open-Meteo (10m wind vectors)         ─┘
-                                               │
-                                               ▼  fetch_conditions(lat, lon, timestamp)
-                                       EnvironmentalData
-                                               │
-                                               ▼  CostModel.evaluate_segment()
-                                       GridEdge.cost  ←  midpoint spatial sampling
-                                               │
-                                               ▼
-                                       GeographicGridGraph
-                                               │
-                                               ▼
-                                           D* Lite
+INITIAL LIVE ENVIRONMENT
+    -> INITIAL EDGE COSTS
+    -> D* LITE OPTIMAL ROUTE
+    -> ENVIRONMENT CHANGES (LIVE or SIMULATED)
+    -> refresh_edges() -> EdgeRefreshResult
+    -> dstar.update_edge()
+    -> dstar.replan()  [same planner instance, no rebuild]
+    -> NEW OPTIMAL ROUTE
+    -> Verify vs independent Dijkstra oracle
 ```
 
 ---
 
-## What Was Implemented
+## What Changed
 
-### 1. Dependency Injection into `GeographicGridGraph`
+### 1. `EdgeRefreshResult` dataclass (NEW — `naudisha/routing/graph.py`)
 
-`GeographicGridGraph.__init__` now accepts an optional `environment_provider: Optional[WeatherProvider] = None`.
-
-The graph stores the reference but **never calls it during routing** — only during explicit `populate_environment()` or `refresh_edges()` calls. This preserves the strict decoupling between the routing algorithm and data providers.
-
----
-
-### 2. Edge Midpoint Sampling — `get_edge_midpoint(src_id, tgt_id)`
-
-Each directed edge `s → t` is sampled at the geographic midpoint:
-
-```
-lat_mid = (lat_s + lat_t) / 2
-lon_mid = (lon_s + lon_t) / 2
+```python
+@dataclass
+class EdgeRefreshResult:
+    source_id: str
+    target_id: str
+    old_cost: float       # Cost before environmental update
+    new_cost: float       # Cost after environmental update
+    old_env: Optional[EnvironmentalData]  # Environment before
+    new_env: Optional[EnvironmentalData]  # Environment after
 ```
 
-**Rationale**: A ship traveling from `s` to `t` in a straight line experiences the environment at the midpoint as the best single-point average of conditions along that segment.
+This is the **only new abstraction** in this phase. It is a lightweight value object — no logic, just data.
+
+**Why**: The routing layer needs to know which specific edges changed and by how much, so it can call `dstar.update_edge()` on exactly those edges without touching the rest of the planner state.
 
 ---
 
-### 3. Full Grid Population — `populate_environment(timestamp, provider, ship, weights)`
+### 2. `refresh_edges()` return type changed: `None` → `List[EdgeRefreshResult]`
 
-- Iterates all directed edges in the graph.
-- Skips non-navigable edges (already `inf` cost — no wasted API calls).
-- Samples the provider at the edge midpoint with the explicit UTC timestamp.
-- Stores the returned `EnvironmentalData` on `edge.env_data`.
-- Recalculates `edge.cost` via `CostModel.evaluate_segment()`.
-- On any provider failure: raises `GridEnvironmentUpdateError` with full context (source, target, midpoint lat/lon, timestamp).
+Before refreshing each edge, captures `old_cost` and `old_env`. After refreshing, captures `new_cost` and `new_env`. Returns one result per requested edge.
 
----
+Callers that previously ignored the return value are unaffected (Python silently discards it).
 
-### 4. Selective Edge Refresh — `refresh_edges(edges, timestamp, provider, ship, weights)`
-
-Accepts a list of `(src_id, tgt_id)` pairs. Only those specific edges are queried and updated. Unrelated edges remain unchanged. This supports targeted updates when environmental conditions change locally (e.g., a storm forming in one corridor).
+On provider failure: graph state is NOT modified for the failing edge (old values preserved). `GridEnvironmentUpdateError` is re-raised immediately.
 
 ---
 
-### 5. `GridEnvironmentUpdateError`
+### 3. D* Lite: unchanged
 
-A new exception class that wraps provider failures with rich edge context:
-- Source node ID, target node ID
-- Midpoint latitude and longitude
-- Timestamp
-- Original exception
-
-This allows callers to distinguish a graph structure error from a data provider failure, and to make targeted retry or obstacle decisions.
+`dstar_lite.py` has **zero changes**. The planner already exposes:
+- `update_edge(source_id, target_id)` — O(1) vertex update
+- `update_edges(edges)` — batch update
+- `replan()` — incremental `compute_shortest_path()` + path extraction
 
 ---
 
-## Test Results
+## Dynamic Update Pipeline (Caller Code Pattern)
 
-**80/80 offline unit tests pass** (8 new tests in `tests/test_grid_environment_integration.py`):
+```python
+# 1. Obtain changed edges from environment event (e.g. storm)
+results = graph.refresh_edges(
+    edges=affected_edge_pairs,
+    timestamp=new_timestamp,
+    provider=storm_provider,
+    ship=ship,
+)
 
-| # | Test | Status |
+# 2. Notify D* Lite of exactly the changed edges
+for result in results:
+    dstar.update_edge(result.source_id, result.target_id)
+
+# 3. Incremental replan — same planner object, g/rhs/km preserved
+new_route = dstar.replan()
+```
+
+No graph rebuild. No planner reset. No Dijkstra used as the actual planner.
+
+---
+
+## Test Suite: 100/100 Pass (20 New Tests)
+
+All 20 tests in `tests/test_dynamic_replanning.py` are completely offline and deterministic.
+
+| # | Test | Key Assertion |
 |---|---|---|
-| 1 | Graph accepts injected WeatherProvider via constructor | OK |
-| 2-5 | `populate_environment()` queries at exact midpoints with explicit timestamp | OK |
-| 6-8 | EnvironmentalData stored on edge, cost recalculated via CostModel | OK |
-| 9-10 | `refresh_edges()` updates only requested pairs, leaves others unchanged | OK |
-| 11 | Provider failure raises `GridEnvironmentUpdateError` with full context | OK |
-| 12 | Non-navigable obstacle edges skipped — no provider calls | OK |
-| 13 | `populate_environment()` without provider raises `ValueError` | OK |
-| 14 | D* Lite plans optimal routes on environment-populated grid | OK |
+| 1 | Initial route matches Dijkstra | `abs(dstar_cost - dijkstra_cost) < 1e-9` |
+| 2 | Cost increase changes route | Route or cost differs after storm |
+| 3 | Cost decrease restores corridor | `cleared_cost <= storm_cost` |
+| 4 | Storm causes detour | Detour reaches goal |
+| 5 | Storm clearance restores route | `restored_cost == initial_cost` |
+| 6 | Multiple simultaneous updates | Dijkstra oracle matches after batch |
+| 7 | Obstacle causes route change | Blocked node absent from new route |
+| 8 | Obstacle removal restores route | `restored_cost == initial_cost` |
+| 9 | Only affected edges queried | `len(call_log) == 1` |
+| 10 | Unaffected edges unchanged | `cost_before == cost_after` |
+| **11** | **Planner instance reused** | `id(dstar) before == id(dstar) after` |
+| 12 | Incremental = Dijkstra after update | `abs_tol=1e-9` |
+| 13 | Cost identity | `get_path_cost() == sum(edge.cost)` |
+| 14 | Unreachable → empty route + inf cost | |
+| 15 | Unreachable → reachable after update | |
+| 16 | Provider failure → graph unchanged | `edge.cost` and `edge.env_data` unchanged |
+| 17 | No silent fake data on failure | `env_data is original_env` |
+| 18 | Timestamp forwarded to provider | `call_log == [new_timestamp]` |
+| 19 | A→B and B→A independent | Only 1 provider call for single-edge refresh |
+| 20 | FP tolerance `abs_tol=1e-9` | Identical env produces identical cost |
 
 ---
 
-## Live Integration Demo Results
+## Live Demo: `examples/run_dynamic_replanning_demo.py`
 
-**Script**: `examples/run_live_grid_routing_demo.py`
+7-phase demo on a 5×5 Arabian Sea grid:
 
-**Grid**: 3×3, Arabian Sea corridor — `18.0°N–19.0°N, 71.0°E–72.0°E` (open water)  
-**Timestamp**: `2026-08-15T12:00:00Z`  
-**Data sources**: Copernicus Marine (currents + waves) + Open-Meteo (10m wind)
+| Phase | Data Source | Description |
+|---|---|---|
+| 1 | — | Grid specification |
+| 2 | **LIVE** | Copernicus Marine + Open-Meteo initial grid population |
+| 3 | **LIVE** | Initial D* Lite route + Dijkstra oracle |
+| 4 | **SIMULATED** | Storm: 45 kn wind, 5.5 m waves, 2.5 kn opposing current |
+| 5 | — | Same planner reused: incremental replan after storm |
+| 6 | **LIVE** | Storm cleared: live data re-fetched for storm-affected edges |
+| 7 | — | Second incremental replan + Dijkstra oracle |
+| 8 | — | Timing: initial, storm replan, clearance replan |
 
-### Representative Live Edge Data
-
-| Edge | Midpoint | Current | Wave Hs | Wind | Cost |
-|---|---|---|---|---|---|
-| node_0_0 → node_1_0 | 18.25N, 71.00E | 0.34 kn @ 132° | 2.50 m | 18.2 kn @ 259° | 2.6725 |
-| node_0_0 → node_0_1 | 18.00N, 71.25E | 0.31 kn @ 136° | 2.42 m | 18.7 kn @ 261° | 2.4093 |
-| node_1_1 → node_2_1 | 18.75N, 71.50E | 0.24 kn @ 125° | 2.42 m | 16.8 kn @ 261° | 2.5941 |
-| node_1_1 → node_1_2 | 18.50N, 71.75E | 0.25 kn @ 125° | 2.49 m | 16.3 kn @ 262° | 2.3348 |
-| node_1_2 → node_2_2 | 18.75N, 72.00E | 0.37 kn @ 123° | 2.47 m | 15.5 kn @ 262° | 2.5634 |
-
-### D* Lite Pathfinding
-
-- **Optimal Route**: `node_0_0 → node_0_1 → node_0_2 → node_1_2 → node_2_2`
-- **Total Waypoints**: 5
-- **Accumulated Cost**: `9.9162`
-- **Total Distance**: `117.14 NM`
-- **Estimated Transit**: `6.51 hours (~0.27 days)`
-
-### Oracle Verification (Independent Dijkstra)
-
-| Metric | Value |
-|---|---|
-| D* Lite Cost | `9.916245` |
-| Dijkstra Oracle Cost | `9.916245` |
-| Absolute Delta | `0.000000e+00` |
-| Result | **MATHEMATICAL MATCH — 100% Globally Optimal [PASSED]** |
+All simulated data is clearly labelled `[DATA SOURCE: SIMULATED - NOT LIVE]`.
+No fabricated values are presented as real Copernicus/Open-Meteo observations.
 
 ---
 
@@ -138,8 +135,13 @@ This allows callers to distinguish a graph structure error from a data provider 
 
 | File | Change |
 |---|---|
-| `naudisha/routing/graph.py` | Added `GridEnvironmentUpdateError`, `environment_provider` param, `get_edge_midpoint()`, `populate_environment()`, `refresh_edges()` |
-| `naudisha/routing/__init__.py` | Exported `GridEnvironmentUpdateError` |
-| `naudisha/__init__.py` | Exported `GridEnvironmentUpdateError` at root level |
-| `tests/test_grid_environment_integration.py` | 8 new offline integration unit tests |
-| `examples/run_live_grid_routing_demo.py` | End-to-end live demo with Dijkstra oracle verification |
+| `naudisha/routing/graph.py` | Added `EdgeRefreshResult` dataclass; updated `refresh_edges()` to return `List[EdgeRefreshResult]`; added `Union`, `datetime` imports |
+| `naudisha/routing/__init__.py` | Exported `EdgeRefreshResult` |
+| `naudisha/__init__.py` | Exported `EdgeRefreshResult` |
+| `tests/test_dynamic_replanning.py` | NEW — 20 offline tests |
+| `examples/run_dynamic_replanning_demo.py` | NEW — 7-phase live demo |
+| `PROGRESS.md` | Phase 7 section added |
+
+**Previous test count**: 80  
+**New test count**: 100  
+**Regressions**: 0

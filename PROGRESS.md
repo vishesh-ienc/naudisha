@@ -213,6 +213,103 @@ The system is designed as a layered, modular maritime routing pipeline:
 
 ---
 
-### Phase 7: Interactive Visual Dashboard & API (Upcoming) ⏳
+### Phase 7: Dynamic Environmental Replanning (D* Lite Incremental Update) ✅ (Complete)
+
+**Goal**: Connect the live environmental data pipeline to D* Lite's incremental repair engine so that environmental changes produce selective edge refreshes, and the same D* Lite planner instance incrementally replans without rebuilding the graph or resetting planner state.
+
+#### New API: `EdgeRefreshResult`
+
+Added to `naudisha/routing/graph.py`:
+
+```python
+@dataclass
+class EdgeRefreshResult:
+    source_id: str
+    target_id: str
+    old_cost: float
+    new_cost: float
+    old_env: Optional[EnvironmentalData]
+    new_env: Optional[EnvironmentalData]
+```
+
+`refresh_edges()` now returns `List[EdgeRefreshResult]` instead of `None`. The routing layer uses this to call `dstar.update_edge()` on exactly the edges that changed, without touching any other planner state.
+
+#### Dynamic Update Pipeline
+
+```
+Environmental update (LIVE or SIMULATED)
+    -> graph.update_edge_environment() or graph.refresh_edges()
+    -> EdgeRefreshResult (old_cost, new_cost, old_env, new_env)
+    -> dstar.update_edge(source_id, target_id)  [per changed edge]
+    -> dstar.replan()
+    -> New optimal route
+    -> Verify vs independent Dijkstra oracle
+```
+
+**Key invariants**:
+- `GeographicGridGraph` is NOT rebuilt
+- `DStarLite` is NOT reinstantiated
+- `g`, `rhs`, `km` values are preserved and incrementally repaired
+- Provider is NOT called during routing — only during explicit refresh/populate calls
+
+#### Simulated Storm Methodology
+
+The demo applies a deterministic storm scenario to a corridor:
+
+```
+Wind:    45 knots (headwind)
+Waves:   5.5 m Hs (head seas)
+Current: 2.5 knots (opposing)
+```
+
+This scenario is clearly labelled **[SIMULATED - NOT LIVE]** in all output.
+Real Copernicus + Open-Meteo data is used for the initial grid and storm clearance (re-fetch).
+No simulated values are presented as real observations.
+
+#### Test Results: 100/100 Offline Tests Pass
+
+20 new tests in `tests/test_dynamic_replanning.py`:
+
+| # | Coverage |
+|---|---|
+| 1 | Initial route matches Dijkstra oracle |
+| 2 | Cost increase causes route change |
+| 3 | Cost decrease can restore preferred corridor |
+| 4 | Storm causes detour route |
+| 5 | Storm clearance restores original corridor |
+| 6 | Simultaneous multi-edge updates handled correctly |
+| 7 | Obstacle appearance causes route change |
+| 8 | Obstacle disappearance allows route restoration |
+| 9 | Only affected edges queried (call count check) |
+| 10 | Unaffected edges remain unchanged |
+| 11 | **D* Lite planner instance reused** (`id(dstar)` identical before/after) |
+| 12 | Incremental result matches Dijkstra after update |
+| 13 | Cost identity: `route_cost == sum(edge.cost)` |
+| 14 | Unreachable state handled correctly |
+| 15 | Unreachable state can become reachable |
+| 16 | Provider failure does not partially corrupt graph |
+| 17 | Failed refresh no silent data replacement |
+| 18 | Timestamp forwarded correctly to provider |
+| 19 | Both directed edges (A→B, B→A) handled independently |
+| 20 | Floating-point comparison uses `abs_tol=1e-9` |
+
+**Test count progression**: 80 → **100** (20 new, 0 regressions)
+
+#### Live Demo (`examples/run_dynamic_replanning_demo.py`)
+
+| Phase | Description |
+|---|---|
+| 1 | Grid specification (5×5, Arabian Sea) |
+| 2 | Initial LIVE environment from Copernicus + Open-Meteo |
+| 3 | Initial D* Lite optimal route + Dijkstra oracle |
+| 4 | SIMULATED storm intercept (clearly labelled) |
+| 5 | Incremental replan — same planner, no rebuild |
+| 6 | Storm clearance (LIVE data re-fetched for cleared edges) |
+| 7 | Second incremental replan + Dijkstra oracle |
+| 8 | Performance timing: initial plan, storm replan, clearance replan |
+
+---
+
+### Phase 8: Interactive Visual Dashboard & API (Upcoming) ⏳
 - REST/WebSocket API for route planning requests and real-time voyage monitoring.
 - Interactive map frontend displaying vessel trajectory, weather overlays, and dynamic route adjustments.
