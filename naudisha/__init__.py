@@ -26,6 +26,14 @@ from naudisha.routing.graph import (
     GeographicGridGraph,
 )
 from naudisha.routing.dstar_lite import DStarLite
+from naudisha.data import (
+    WeatherProvider,
+    MockWeatherProvider,
+    CopernicusMarineProvider,
+    CopernicusProviderError,
+    CopernicusAuthenticationError,
+    CopernicusDataUnavailableError,
+)
 
 __all__ = [
     "ShipProfile",
@@ -42,4 +50,10 @@ __all__ = [
     "GridEdge",
     "GeographicGridGraph",
     "DStarLite",
+    "WeatherProvider",
+    "MockWeatherProvider",
+    "CopernicusMarineProvider",
+    "CopernicusProviderError",
+    "CopernicusAuthenticationError",
+    "CopernicusDataUnavailableError",
 ]

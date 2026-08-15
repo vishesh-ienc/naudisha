@@ -50,37 +50,37 @@ class EnvironmentalData:
 
     Attributes:
         timestamp: Time of observation or forecast (ISO string or datetime object).
-        wind_speed: Wind speed in knots.
-        wind_direction: Direction from which wind originates in degrees [0, 360) (meteorological convention).
-        wave_height: Significant wave height (Hs) in meters.
-        wave_direction: Direction towards/from which waves propagate in degrees [0, 360).
-        wave_period: Peak wave period (Tp) in seconds.
-        current_speed: Ocean surface current velocity in knots.
-        current_direction: Direction towards which current flows in degrees [0, 360) (oceanographic convention).
+        wind_speed: Wind speed in knots (Optional, None if atmospheric data unavailable).
+        wind_direction: Direction from which wind originates in degrees [0, 360) (Optional).
+        wave_height: Significant wave height (Hs) in meters (Optional).
+        wave_direction: Direction towards/from which waves propagate in degrees [0, 360) (Optional).
+        wave_period: Peak wave period (Tp) in seconds (Optional).
+        current_speed: Ocean surface current velocity in knots (Optional).
+        current_direction: Direction towards which current flows in degrees [0, 360) (Optional).
     """
     timestamp: Union[datetime, str]
-    wind_speed: float
-    wind_direction: float
-    wave_height: float
-    wave_direction: float
-    wave_period: float
-    current_speed: float
-    current_direction: float
+    wind_speed: Optional[float] = None
+    wind_direction: Optional[float] = None
+    wave_height: Optional[float] = None
+    wave_direction: Optional[float] = None
+    wave_period: Optional[float] = None
+    current_speed: Optional[float] = None
+    current_direction: Optional[float] = None
 
     def __post_init__(self) -> None:
-        if self.wind_speed < 0:
+        if self.wind_speed is not None and self.wind_speed < 0:
             raise ValueError("wind_speed cannot be negative.")
-        if not (0 <= self.wind_direction <= 360):
+        if self.wind_direction is not None and not (0 <= self.wind_direction <= 360):
             raise ValueError("wind_direction must be within [0, 360] degrees.")
-        if self.wave_height < 0:
+        if self.wave_height is not None and self.wave_height < 0:
             raise ValueError("wave_height cannot be negative.")
-        if not (0 <= self.wave_direction <= 360):
+        if self.wave_direction is not None and not (0 <= self.wave_direction <= 360):
             raise ValueError("wave_direction must be within [0, 360] degrees.")
-        if self.wave_period < 0:
+        if self.wave_period is not None and self.wave_period < 0:
             raise ValueError("wave_period cannot be negative.")
-        if self.current_speed < 0:
+        if self.current_speed is not None and self.current_speed < 0:
             raise ValueError("current_speed cannot be negative.")
-        if not (0 <= self.current_direction <= 360):
+        if self.current_direction is not None and not (0 <= self.current_direction <= 360):
             raise ValueError("current_direction must be within [0, 360] degrees.")
 
 

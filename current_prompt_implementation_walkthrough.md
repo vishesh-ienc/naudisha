@@ -1,159 +1,94 @@
-# Current Prompt Implementation Walkthrough: Copernicus Marine Service Configuration & Dataset Identification
+# Current Prompt Implementation Walkthrough: Copernicus Marine Data Provider Implementation
 
 ## 🎯 Scope of Current Prompt
-- Pivot environmental data strategy from Open-Meteo to the official **Copernicus Marine Service (CMEMS)** as the primary oceanographic source.
-- Configure and verify Copernicus Marine access using the official `copernicusmarine` toolbox (v2.4.1).
-- Explore catalogue metadata and identify exact dataset IDs and variables for ocean currents (`uo`, `vo`) and waves (`VHM0`, `VMDR`, `VTPK`).
-- Design mathematical conversion formulas mapping CMEMS variables to NauDisha's `EnvironmentalData` model.
-- Add offline unit tests for schemas and conversions without network/credential dependencies.
-- Create a verification script demonstrating access, metadata discovery, and vector conversions.
-- Ensure strict credential privacy (never hardcoding or logging credentials; `.gitignore` exclusions).
-- Preserve 100% decoupling: zero modifications to D* Lite, `GeographicGridGraph`, `CostModel`, or scoring formulas.
+- Implement the first real Copernicus Marine data provider for NauDisha: `CopernicusMarineProvider`.
+- Architecture data flow:
+  $$\text{Copernicus Marine} \longrightarrow \text{EnvironmentalData} \longrightarrow \text{CostModel} \longrightarrow \text{GeographicGridGraph} \longrightarrow D^* \text{ Lite}$$
+- Reuse existing Copernicus dataset schemas and mathematical vector conversion formulas (`cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i` and `cmems_mod_glo_wav_anfc_0.083deg_PT3H-i`).
+- Support targeted spatial/temporal point queries using `copernicusmarine.read_dataframe` to avoid downloading full datasets.
+- Handle ocean current vectors $(u_o, v_o)$ and spectral wave variables $(VHM0, VMDR, VTPK)$.
+- Explicitly set `wind_speed=None` and `wind_direction=None` (no mock wind invention) with backwards-compatible `Optional[float]` validation in `EnvironmentalData`.
+- Implement robust exception hierarchy (`CopernicusProviderError`, `CopernicusAuthenticationError`, `CopernicusDataUnavailableError`).
+- Add dependency injection to support fast offline unit testing without network/credential requirements.
+- Add live integration script [`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py).
+- Preserve 100% decoupling: zero modifications to D* Lite, `GeographicGridGraph`, or `CostModel` formulas.
 
 ---
 
 ## 🛠 Changes Implemented
 
-### 1. Architecture Transition & Strategy
-- **Primary Source**: Copernicus Marine Service is established as the primary oceanographic provider for research-grade current and wave data.
-- **Wind Strategy**: Copernicus focuses on marine hydrodynamics; wind parameters (`wind_speed`, `wind_direction`) will be supplied by a complementary atmospheric provider (e.g., NOAA GFS or Open-Meteo) in a subsequent step.
-- **Provider Decoupling**: Kept `WeatherProvider` abstract interface in [`naudisha/data/weather_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/weather_provider.py) completely decoupled.
+### 1. `EnvironmentalData` Model Compatibility ([`naudisha/core/models.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/core/models.py))
+- Updated field annotations to `Optional[float] = None` with None-safe `__post_init__` validation.
+- Allows cleanly creating `EnvironmentalData` objects where wind data is pending from a secondary atmospheric provider without inventing dummy numbers.
 
-### 2. Dependency & Security Configuration
-- **Package**: Added `copernicusmarine>=2.0.0` under optional dependencies in [`pyproject.toml`](file:///c:/Users/VISHESH/Desktop/naudisha/pyproject.toml).
-- **Toolbox Installation**: Installed `copernicusmarine==2.4.1` into the Python environment.
-- **Security & Privacy**: Updated [`.gitignore`](file:///c:/Users/VISHESH/Desktop/naudisha/.gitignore) to exclude `.copernicusmarine/`, `*.nc`, `*.grib`, and any local credential or raster data files. Local session authentication is managed exclusively through standard user profile credential storage.
+### 2. `CopernicusMarineProvider` Implementation ([`naudisha/data/copernicus_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/copernicus_provider.py))
+- Implements `WeatherProvider.fetch_conditions(lat, lon, timestamp)`.
+- **Targeted Subsetting**: Queries minimal spatial window ($[\text{lat} \pm 0.1^\circ]$, $[\text{lon} \pm 0.1^\circ]$) and time window ($[t \pm 3\text{h}]$) via `copernicusmarine.read_dataframe` with `coordinates_selection_method="nearest"`.
+- **Ocean Currents Conversion**:
+  - Speed: $v_{\text{knots}} = \sqrt{u_o^2 + v_o^2} \times 1.9438444924$
+  - Direction: $\theta_{\text{flow}} = (90^\circ - \text{atan2}(v_o, u_o) \cdot \frac{180^\circ}{\pi} + 360^\circ) \pmod{360^\circ}$
+- **Ocean Waves Extraction**: Maps `VHM0` ($m$) to `wave_height`, `VMDR` ($^\circ$) to `wave_direction`, and `VTPK` ($s$) to `wave_period`.
+- **In-Memory Cache**: Automatically caches responses using `(round(lat, 2), round(lon, 2), timestamp_hour)` keys.
+- **Pre-Flight Credential Safety**: Checks for credential presence before network execution to avoid blocking automated tasks on interactive stdin.
 
-### 3. Discovered Datasets & Schema Specification ([`naudisha/data/copernicus_schema.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/copernicus_schema.py))
-Defined dataset specifications and conversion helpers:
+### 3. Module & Package Exports ([`naudisha/data/__init__.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/__init__.py), [`naudisha/__init__.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/__init__.py))
+- Exported `CopernicusMarineProvider`, `CopernicusProviderError`, `CopernicusAuthenticationError`, and `CopernicusDataUnavailableError`.
 
-#### A. Ocean Currents (Physics)
-- **Product ID**: `GLOBAL_ANALYSISFORECAST_PHY_001_024`
-- **Primary Dataset ID**: `cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i`
-- **Variables**: `uo` (Eastward velocity, $m/s$), `vo` (Northward velocity, $m/s$)
-- **Depth Layer**: $0.494\text{ m}$ (Surface layer)
-- **Spatial Resolution**: $0.083^\circ \times 0.083^\circ$ (~9 km / $1/12^\circ$), Global coverage including Indian Ocean
-- **Temporal Resolution**: 6-hourly instantaneous
-- **Alternative Hourly Dataset**: `cmems_mod_glo_phy_anfc_merged-uv_PT1H-i` (`utotal`, `vtotal`, 1-hourly surface)
+### 4. Offline Unit Test Suite ([`tests/test_copernicus_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_copernicus_provider.py))
+- Added 7 offline unit tests using dependency-injected mock data readers:
+  - `test_successful_fetch_and_mapping`
+  - `test_in_memory_cache_hit`
+  - `test_missing_current_values_raises_error`
+  - `test_nan_current_values_raises_error`
+  - `test_missing_wave_values_raises_error`
+  - `test_authentication_error_handling`
+  - `test_coordinate_bounds_validation`
 
-#### B. Ocean Waves
-- **Product ID**: `GLOBAL_ANALYSISFORECAST_WAV_001_027`
-- **Dataset ID**: `cmems_mod_glo_wav_anfc_0.083deg_PT3H-i`
-- **Variables**: `VHM0` (Significant wave height, $m$), `VMDR` (Mean wave direction, $^\circ$), `VTPK` (Peak wave period, $s$)
-- **Spatial Resolution**: $0.083^\circ \times 0.083^\circ$ (~9 km)
-- **Temporal Resolution**: 3-hourly instantaneous
-
-### 4. Mathematical Vector & Variable Conversion Formulas
-- **Current Speed ($v_{\text{knots}}$)**:
-  $$v_{\text{magnitude}} = \sqrt{u_o^2 + v_o^2}\text{ m/s}$$
-  $$v_{\text{knots}} = v_{\text{magnitude}} \times 1.9438444924$$
-- **Current Flow Direction ($\theta_{\text{flow}}$)**:
-  $$\theta_{\text{flow}} = \left(90^\circ - \text{atan2}(v_o, u_o) \cdot \frac{180^\circ}{\pi} + 360^\circ\right) \pmod{360^\circ}$$
-  *(Oceanographic heading towards which current is flowing, $0^\circ = \text{North}, 90^\circ = \text{East}$)*
-- **Wave Parameters**:
-  - `wave_height` = `VHM0` ($m$)
-  - `wave_direction` = `VMDR` ($^\circ$)
-  - `wave_period` = `VTPK` ($s$)
-
-### 5. Verification Script ([`examples/verify_copernicus_access.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/verify_copernicus_access.py))
-- Demonstrates active Copernicus Marine Toolbox version, session verification, metadata retrieval, and live vector conversions without exposing credentials.
+### 5. Live Data Integration Sample ([`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py))
+- Script requesting a live sample for Arabian Sea / Indian Ocean coordinates ($18.50^\circ\text{N}, 72.00^\circ\text{E}$).
+- Cleanly outputs returned `EnvironmentalData` and provides actionable guidance if local credentials are required.
 
 ---
 
 ## 🧪 Verification & Test Results
 
-### 1. Offline Unit Test Suite (57/57 Tests Passed)
+### 1. Unit Test Suite (64/64 Tests Passed)
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 ```
-test_ocean_currents_spec_integrity (test_copernicus_metadata.TestCopernicusSchemas.test_ocean_currents_spec_integrity) ... ok
-test_surface_currents_hourly_spec_integrity (test_copernicus_metadata.TestCopernicusSchemas.test_surface_currents_hourly_spec_integrity) ... ok
-test_waves_spec_integrity (test_copernicus_metadata.TestCopernicusSchemas.test_waves_spec_integrity) ... ok
-test_cardinal_directions (test_copernicus_metadata.TestVectorConversions.test_cardinal_directions) ... ok
-test_mapping_to_environmental_data_model (test_copernicus_metadata.TestVectorConversions.test_mapping_to_environmental_data_model) ... ok
-test_roundtrip_conversions (test_copernicus_metadata.TestVectorConversions.test_roundtrip_conversions) ... ok
-... (All 51 previous tests including D* Lite, Graph, CostModel, Scorers, and Dijkstra Oracle) ...
+test_authentication_error_handling (test_copernicus_provider.TestCopernicusMarineProvider.test_authentication_error_handling) ... ok
+test_coordinate_bounds_validation (test_copernicus_provider.TestCopernicusMarineProvider.test_coordinate_bounds_validation) ... ok
+test_in_memory_cache_hit (test_copernicus_provider.TestCopernicusMarineProvider.test_in_memory_cache_hit) ... ok
+test_missing_current_values_raises_error (test_copernicus_provider.TestCopernicusMarineProvider.test_missing_current_values_raises_error) ... ok
+test_missing_wave_values_raises_error (test_copernicus_provider.TestCopernicusMarineProvider.test_missing_wave_values_raises_error) ... ok
+test_nan_current_values_raises_error (test_copernicus_provider.TestCopernicusMarineProvider.test_nan_current_values_raises_error) ... ok
+test_successful_fetch_and_mapping (test_copernicus_provider.TestCopernicusMarineProvider.test_successful_fetch_and_mapping) ... ok
+... (All 57 previous unit tests: Copernicus schemas, D* Lite, Dijkstra oracle, Graph, CostModel) ...
 
 ----------------------------------------------------------------------
-Ran 57 tests in 0.021s
+Ran 64 tests in 0.054s
 
 OK
 ```
 
-### 2. Copernicus Access & Discovery Script Output
+### 2. Live Sample Output
 ```
 ======================================================================
-   NauDisha - Copernicus Marine Service Configuration & Discovery
+   NauDisha - Copernicus Marine Service Live Sample Data Fetch
 ======================================================================
 
-[1] COPERNICUS MARINE TOOLBOX:
-    Toolbox Version: 2.4.1
-    Authentication:  Local Credential Session Active
+[1] TARGET QUERY PARAMETERS:
+    Location:   (18.50N, 72.00E) - Arabian Sea / Indian Ocean
+    Timestamp:  2026-08-15T12:00:00Z
 
-----------------------------------------------------------------------
-   [2] IDENTIFIED OCEAN CURRENTS (PHYSICS) DATASETS
-----------------------------------------------------------------------
-   A. Primary 6-Hourly Instantaneous Current Vectors (3D Surface Layer):
+[2] INITIALIZING COPERNICUS MARINE PROVIDER...
 
-   [Dataset ID]:         cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i
-   [Product ID]:         GLOBAL_ANALYSISFORECAST_PHY_001_024
-   [Title]:              Global Ocean Physics Analysis and Forecast - Currents (Instantaneous)
-   [Spatial Resolution]: 0.083 deg x 0.083 deg (~9 km / 1/12 deg)
-   [Temporal Interval]:  6-hourly instantaneous (PT6H-i)
-   [Depth Level]:        0.494 m
-   [Coverage]:           Global (180W-180E, 80S-90N)
-   [Variables]:
-       * uo       -> Eastward water velocity (m/s)
-       * vo       -> Northward water velocity (m/s)
+[3] FETCHING LIVE OCEANOGRAPHIC CONDITIONS...
+    - Querying Ocean Currents (uo, vo from Global Physics Forecast)...
+    - Querying Wave Parameters (Hs, direction, period from Wave Forecast)...
 
-   B. Alternative 1-Hourly Instantaneous Merged Surface UV Currents:
-
-   [Dataset ID]:         cmems_mod_glo_phy_anfc_merged-uv_PT1H-i
-   [Product ID]:         GLOBAL_ANALYSISFORECAST_PHY_001_024
-   [Title]:              Global Ocean Physics Analysis and Forecast - Merged UV Surface Currents
-   [Spatial Resolution]: 0.083 deg x 0.083 deg (~9 km)
-   [Temporal Interval]:  1-hourly instantaneous (PT1H-i)
-   [Depth Level]:        0.0 m
-   [Coverage]:           Global (180W-180E, 80S-90N)
-   [Variables]:
-       * utotal   -> Surface eastward total velocity (m/s)
-       * vtotal   -> Surface northward total velocity (m/s)
-
-----------------------------------------------------------------------
-   [3] IDENTIFIED OCEAN WAVES FORECAST DATASET
-----------------------------------------------------------------------
-
-   [Dataset ID]:         cmems_mod_glo_wav_anfc_0.083deg_PT3H-i
-   [Product ID]:         GLOBAL_ANALYSISFORECAST_WAV_001_027
-   [Title]:              Global Ocean Waves Analysis and Forecast - Spectral Wave Parameters
-   [Spatial Resolution]: 0.083 deg x 0.083 deg (~9 km / 1/12 deg)
-   [Temporal Interval]:  3-hourly instantaneous (PT3H-i)
-   [Depth Level]:        Surface Spectrum
-   [Coverage]:           Global (180W-180E, 80S-90N)
-   [Variables]:
-       * VHM0     -> Spectral significant wave height (Hs) (m)
-       * VMDR     -> Mean wave direction from which waves propagate (degrees)
-       * VTPK     -> Peak wave period (Tp) (s)
-
-======================================================================
-   [4] MATHEMATICAL VECTOR CONVERSION DEMONSTRATION
-======================================================================
-    Sample Copernicus Vectors:  uo = +0.52 m/s, vo = +0.88 m/s
-    Converted Speed (knots):    1.99 knots (1 m/s = 1.943844 kn)
-    Converted Direction (deg):  30.6 deg (Oceanographic flow heading)
-
-======================================================================
-   [5] ENVIRONMENTALDATA INTEGRATION ROADMAP
-======================================================================
-    * wave_height        <-- CMEMS VHM0 (Spectral significant wave height, m)
-    * wave_direction     <-- CMEMS VMDR (Mean wave direction, deg)
-    * wave_period        <-- CMEMS VTPK (Peak wave period, s)
-    * current_speed      <-- CMEMS sqrt(uo^2 + vo^2) * 1.943844 (knots)
-    * current_direction  <-- CMEMS (90 - atan2(vo, uo)) mod 360 (deg)
-    * wind_speed         <-- Atmospheric Provider (e.g. NOAA GFS / Open-Meteo)
-    * wind_direction     <-- Atmospheric Provider
-======================================================================
-   COPERNICUS MARINE ACCESS & METADATA DISCOVERY VERIFIED
-======================================================================
+[!] AUTHENTICATION ERROR:
+    No local Copernicus Marine credentials found in ~/.copernicusmarine/ or environment variables. Please run 'copernicusmarine login' in your terminal to authenticate with your Copernicus account.
+    Please run 'copernicusmarine login' in your terminal to set up local credentials.
 ```

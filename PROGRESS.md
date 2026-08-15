@@ -106,49 +106,34 @@ The system is designed as a layered, modular maritime routing pipeline:
 
 ---
 
-### Phase 4: Copernicus Marine Service Integration & Discovery ✅ (In Progress)
-**Status**: Access Configured & Datasets Identified
+### Phase 4: Copernicus Marine Service Provider & Oceanographic Ingestion ✅
+**Status**: Completed (Ocean Currents & Waves Live Provider Active)
 
-- **Architecture Strategy Evolution**:
-  - **OLD Strategy**: Open-Meteo planned as primary marine & weather source.
-  - **NEW Strategy**: **Copernicus Marine Service (CMEMS)** is the primary oceanographic data source. A separate free weather provider (e.g. NOAA GFS / Open-Meteo) will be integrated in a later step to supply complementary wind data.
-  - **Why the change was made**: Copernicus Marine is the official European earth observation programme for oceanography, providing high-resolution physics-based analysis and forecasting models (NEMO, WaveWatch III, MFWAM) with in-situ Argo float and satellite altimetry assimilation. It offers dedicated, research-grade eastward/northward ocean currents (`uo`, `vo`) and full spectral wave parameters (`VHM0`, `VMDR`, `VTPK`).
-- **Provider Abstraction Intact**:
-  - Kept `WeatherProvider` interface completely decoupled from specific data backends.
-  - D* Lite, `GeographicGridGraph`, `CostModel`, and scoring formulas remain 100% unchanged.
-- **Toolbox Configuration & Authentication**:
-  - Installed official `copernicusmarine` toolbox (v2.4.1).
-  - Authenticated via local credential configuration (zero credentials stored in repository or logged).
-  - Configured `.gitignore` to prevent any accidental credential or raw NetCDF/GRIB commits.
-- **Discovered & Verified Copernicus Datasets**:
-  1. **Ocean Currents (Physics)**:
-     - **Product ID**: `GLOBAL_ANALYSISFORECAST_PHY_001_024`
-     - **Dataset ID**: `cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i`
-     - **Variables**: `uo` (Eastward water velocity, $m/s$), `vo` (Northward water velocity, $m/s$)
-     - **Depth**: `depth = 0.494m` (Surface layer)
-     - **Spatial Resolution**: $0.083^\circ \times 0.083^\circ$ (~9 km / $1/12^\circ$), Global coverage including Indian Ocean
-     - **Temporal Resolution**: 6-hourly instantaneous
-     - **Alternative Hourly Dataset**: `cmems_mod_glo_phy_anfc_merged-uv_PT1H-i` (1-hourly surface total UV)
-  2. **Ocean Waves**:
-     - **Product ID**: `GLOBAL_ANALYSISFORECAST_WAV_001_027`
-     - **Dataset ID**: `cmems_mod_glo_wav_anfc_0.083deg_PT3H-i`
-     - **Variables**: `VHM0` (Spectral significant wave height, $m$), `VMDR` (Mean wave direction, $^\circ$), `VTPK` (Peak wave period, $s$)
-     - **Spatial Resolution**: $0.083^\circ \times 0.083^\circ$ (~9 km)
-     - **Temporal Resolution**: 3-hourly instantaneous
-- **Variable Mapping Schema to `EnvironmentalData`**:
-  - Current Speed: $v_{\text{knots}} = \sqrt{u_o^2 + v_o^2} \times 1.943844$ ($1\text{ m/s} = 1.943844\text{ kn}$)
-  - Current Direction: $\theta_{\text{flow}} = (90^\circ - \text{atan2}(v_o, u_o) \cdot \frac{180}{\pi} + 360^\circ) \pmod{360^\circ}$ (oceanographic flow heading)
-  - Wave Height: `VHM0` ($m$)
-  - Wave Direction: `VMDR` ($^\circ$)
-  - Wave Period: `VTPK` ($s$)
-  - Wind Speed & Direction: Sourced from complementary atmospheric provider in future step.
-- **Verification & Testing**:
-  - Added schema specifications and vector conversion helpers in [`naudisha/data/copernicus_schema.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/copernicus_schema.py).
-  - Added 6 offline unit tests in [`tests/test_copernicus_metadata.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_copernicus_metadata.py) (57/57 total unit tests passing).
-  - Created [`examples/verify_copernicus_access.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/verify_copernicus_access.py) to inspect catalogue metadata and demonstrate vector conversions live.
+- **Architecture Strategy & Flow**:
+  $$\text{Copernicus Marine (Physics \& Waves)} \longrightarrow \text{EnvironmentalData} \longrightarrow \text{CostModel} \longrightarrow \text{GeographicGridGraph} \longrightarrow D^* \text{ Lite}$$
+  - **Ocean Currents & Waves**: Sourced from Copernicus Marine Service (`cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i` and `cmems_mod_glo_wav_anfc_0.083deg_PT3H-i`).
+  - **Wind Data**: Explicitly set to `None` in `EnvironmentalData` pending integration of a dedicated atmospheric weather provider in a future step.
+  - **Decoupled Provider Abstraction**: `CopernicusMarineProvider` implements `WeatherProvider` without exposing Copernicus internal mechanics to `CostModel` or $D^*$ Lite.
+- **Provider Capabilities**:
+  - `fetch_conditions(lat, lon, timestamp)` fetches targeted spatial/temporal point subsets via `copernicusmarine.read_dataframe`.
+  - In-memory cache `(round(lat, 2), round(lon, 2), timestamp_hour)` prevents redundant API queries during graph edge updates.
+  - Mathematical vector conversions for ocean currents:
+    $$v_{\text{knots}} = \sqrt{u_o^2 + v_o^2} \times 1.9438444924$$
+    $$\theta_{\text{flow}} = \left(90^\circ - \text{atan2}(v_o, u_o) \cdot \frac{180}{\pi} + 360^\circ\right) \pmod{360^\circ}$$
+  - Full exception hierarchy: `CopernicusProviderError`, `CopernicusAuthenticationError`, `CopernicusDataUnavailableError`.
+  - Non-interactive pre-flight credential checks prevent automated hanging on missing local credentials.
+- **Verification & Offline Test Suite (64/64 Tests Passing)**:
+  - Added 7 offline unit tests in [`tests/test_copernicus_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_copernicus_provider.py) testing query construction, conversion, missing values, NaN handling, cache hits, and authentication error translation using dependency injection.
+  - Added live integration sample in [`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py) for Indian Ocean coordinates with helpful authentication guidance.
 
 ---
 
-### Phase 5: Interactive Visual Dashboard & API (Upcoming) ⏳
+### Phase 5: Atmospheric Wind Provider Integration (Next) ⏳
+- Sourcing complementary wind velocity vectors from open atmospheric forecast APIs (NOAA GFS / Open-Meteo).
+- Fusing atmospheric wind vectors with Copernicus ocean currents and waves into a unified `EnvironmentalData` pipeline.
+
+---
+
+### Phase 6: Interactive Visual Dashboard & API (Upcoming) ⏳
 - REST/WebSocket API for route planning requests and real-time voyage monitoring.
 - Interactive map frontend displaying vessel trajectory, weather overlays, and dynamic route adjustments.
