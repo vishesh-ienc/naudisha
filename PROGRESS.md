@@ -80,24 +80,29 @@ The system is designed as a layered, modular maritime routing pipeline:
 
 ---
 
-### Phase 3: D* Lite Dynamic Pathfinding Engine ✅
-**Status**: Completed
+### Phase 3: D* Lite Dynamic Pathfinding Engine & Mathematical Audit ✅
+**Status**: Completed & Mathematically Audited
 
 - **Core Algorithm Implementation**:
   - Implemented the full incremental heuristic search algorithm by Koenig & Likhachev in [`naudisha/routing/dstar_lite.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/routing/dstar_lite.py).
   - Priority queue with lexicographic keys:
     $$k(u) = [\min(g(u), rhs(u)) + h(s_{\text{start}}, u) + k_m, \min(g(u), rhs(u))]$$
-  - Admissible, consistent great-circle Haversine distance heuristic.
   - One-step lookahead $rhs(u)$ and cost-to-goal $g(u)$ tracking with lazy-deletion min-heap.
   - Moving start position support with accumulated heuristic modifier $k_m = k_m + h(s_{\text{last}}, s_{\text{start}})$.
   - Backward search from goal to start for rapid incremental path repair.
+- **Heuristic Admissibility Audit & Resolution**:
+  - **Problem**: Raw geographic distance in nautical miles (~30 NM per grid cell) has a different physical dimension than the dimensionless normalized $[0, \sum w_i]$ cost index ($\approx 1.5 - 3.5$ cost units per cell). An unscaled geographic heuristic would severely overestimate true cost ($30.0 > 1.8$), violating the fundamental admissibility requirement ($h(u, v) \le c^*(u, v)$) and destroying optimality guarantees.
+  - **Resolution**: Set `heuristic_scale = 0.0` as the default baseline. This yields an unconditionally admissible ($0 \le c^*(u, v)$) and monotonic ($0 \le 0 + c(u, v)$) heuristic for all non-negative cost models, guaranteeing mathematical optimality. Optional `heuristic_scale` is configurable when a proven non-zero minimum cost per NM lower bound is supplied.
 - **Dynamic Incremental Replanning**:
   - `update_edge(u, v)` updates only vertex $u$'s $rhs(u)$ value in $O(1)$ time when marine forecasts change.
+  - `update_edges([(u, v), ...])` supports batch regional forecast updates.
   - `update_node(u)` updates vertex $u$ and its incoming predecessors/outgoing successors when obstacle/navigability flags change.
   - `replan()` incrementally repairs the shortest path tree without running $A^*$/Dijkstra from scratch or rebuilding the graph.
-- **Verification**:
-  - 11 new unit tests in `tests/test_dstar_lite.py` covering route planning, obstacle avoidance, unreachable targets, moving starts, and incremental replanning (43/43 total unit tests passing).
-  - Created interactive demonstration `examples/run_dstar_lite_demo.py` showcasing dynamic storm intercept and optimal detour replanning.
+- **Independent Oracle Verification (51/51 Tests Passing)**:
+  - Built an independent reference Dijkstra solver in `tests/test_dstar_lite_correctness.py` as a test oracle.
+  - Rigorously tested initial optimality, dynamic cost increases (storms), cost decreases (shortcuts), simultaneous multiple edge changes, obstacle transitions, moving start, and unreachable goals against Dijkstra.
+  - Verified 100% mathematical cost equality ($D^* \text{ Lite Cost} == \text{Dijkstra Oracle Cost}$).
+  - Created interactive demonstration `examples/run_dstar_lite_demo.py` showcasing dynamic storm intercept, optimal detour replanning, and oracle cross-verification.
 
 ---
 

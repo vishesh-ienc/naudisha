@@ -13,6 +13,7 @@ Demonstrates:
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 
@@ -152,16 +153,22 @@ def main() -> None:
     print(f"       {format_path(graph, new_route)}")
 
     # 7. Comparison & Validation
+    # Independent verification oracle
+    from tests.test_dstar_lite_correctness import reference_dijkstra
+    oracle_path, oracle_cost = reference_dijkstra(graph, start_id, goal_id)
+
     print("\n" + "=" * 70)
-    print("   [7] ROUTE COMPARISON & VERIFICATION")
+    print("   [7] ROUTE COMPARISON & MATHEMATICAL VERIFICATION")
     print("=" * 70)
-    print(f"    Initial Route:    {' -> '.join(initial_route)}")
-    print(f"    Detoured Route:   {' -> '.join(new_route)}")
+    print(f"    Initial Route:       {' -> '.join(initial_route)}")
+    print(f"    Detoured Route:      {' -> '.join(new_route)}")
     
     avoided = not (new_route[0] == hazard_edge_source and new_route[1] == hazard_edge_target)
-    print(f"    Avoided Storm Segment ('{hazard_edge_source}' -> '{hazard_edge_target}'): {avoided}")
-    print(f"    Cost without Detour (taking storm): {initial_cost - old_edge_cost + updated_cost:.4f}")
-    print(f"    Cost with D* Lite Optimal Detour:   {new_cost:.4f}")
+    print(f"    Avoided Storm ('{hazard_edge_source}' -> '{hazard_edge_target}'): {avoided}")
+    print(f"    Cost without Detour (taking storm):    {initial_cost - old_edge_cost + updated_cost:.4f}")
+    print(f"    Cost with D* Lite Optimal Detour:      {new_cost:.4f}")
+    print(f"    Independent Dijkstra Oracle Cost:      {oracle_cost:.4f}")
+    print(f"    Mathematical Optimality Verified:      {math.isclose(new_cost, oracle_cost, abs_tol=1e-5)} (D* Lite cost == Dijkstra oracle)")
     print("======================================================================")
 
 
