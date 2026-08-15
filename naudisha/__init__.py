@@ -33,6 +33,12 @@ from naudisha.data import (
     CopernicusProviderError,
     CopernicusAuthenticationError,
     CopernicusDataUnavailableError,
+    OpenMeteoWindProvider,
+    WindProviderError,
+    WindNetworkError,
+    WindDataUnavailableError,
+    WindResponseMalformedError,
+    CompositeEnvironmentalProvider,
 )
 
 __all__ = [
@@ -56,4 +62,10 @@ __all__ = [
     "CopernicusProviderError",
     "CopernicusAuthenticationError",
     "CopernicusDataUnavailableError",
+    "OpenMeteoWindProvider",
+    "WindProviderError",
+    "WindNetworkError",
+    "WindDataUnavailableError",
+    "WindResponseMalformedError",
+    "CompositeEnvironmentalProvider",
 ]

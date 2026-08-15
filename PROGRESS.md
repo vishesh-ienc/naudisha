@@ -138,9 +138,35 @@ The system is designed as a layered, modular maritime routing pipeline:
 
 ---
 
-### Phase 5: Atmospheric Wind Provider Integration (Next) ⏳
-- Sourcing complementary wind velocity vectors from open atmospheric forecast APIs (NOAA GFS / Open-Meteo).
-- Fusing atmospheric wind vectors with Copernicus ocean currents and waves into a unified `EnvironmentalData` pipeline.
+### Phase 5: Atmospheric Wind Provider & Unified Environmental Data Fusion ✅
+**Status**: Completed (Open-Meteo Wind Provider & Composite Fusion Active)
+
+- **Architecture Strategy & Data Flow**:
+  $$\begin{aligned}
+  \text{Copernicus Marine (Physics \& Waves)} &\longrightarrow \text{Currents } (u_o, v_o) + \text{Waves } (H_s, \text{dir}, T_p) \searrow \\
+  \text{Open-Meteo Forecast (Atmosphere)} &\longrightarrow \text{Wind Vectors } (\text{speed}, \text{direction}) \longrightarrow \text{EnvironmentalData} \longrightarrow \text{CostModel} \longrightarrow D^* \text{ Lite}
+  \end{aligned}$$
+  - **Why Open-Meteo was added**: Copernicus Marine is the premier hydrodynamic authority but specializes in ocean physics. Open-Meteo provides a free, open, global atmospheric forecast API for 10-meter surface wind vectors (`wind_speed_10m`, `wind_direction_10m`) without requiring API keys.
+  - **Copernicus Remains Primary**: Copernicus Marine remains the primary source for all ocean current vectors and spectral wave parameters.
+- **Provider Implementation (`OpenMeteoWindProvider`)**:
+  - Implements `WeatherProvider.fetch_conditions(lat, lon, timestamp)` in [`naudisha/data/wind_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/wind_provider.py).
+  - API endpoint: `https://api.open-meteo.com/v1/forecast` requesting `wind_speed_10m` and `wind_direction_10m`.
+  - Automatic nearest hourly time index matching.
+  - Native unit conversion into knots ($1\text{ km/h} = 0.539957\text{ kn}$, $1\text{ m/s} = 1.943844\text{ kn}$) and degrees $[0, 360)$.
+  - In-memory cache `(round(lat, 2), round(lon, 2), timestamp_hour)` prevents redundant HTTP requests.
+  - Robust exception hierarchy: `WindProviderError`, `WindNetworkError`, `WindDataUnavailableError`, `WindResponseMalformedError`.
+- **Unified Composite Provider (`CompositeEnvironmentalProvider`)**:
+  - Implemented in [`naudisha/data/composite_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/composite_provider.py).
+  - Fuses Copernicus hydrodynamic currents and spectral waves with Open-Meteo atmospheric wind into a single, fully populated `EnvironmentalData` model.
+- **Verification & Testing (72/72 Unit Tests Passing)**:
+  - Added 8 offline unit tests in [`tests/test_wind_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_wind_provider.py) covering JSON parsing, unit conversions, timestamp matching, cache hits, malformed responses, network failures, and coordinate bounds.
+  - Added live integration example [`examples/fetch_wind_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_wind_sample.py).
+  - Added full multi-source fusion example [`examples/fetch_combined_environmental_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_combined_environmental_sample.py) demonstrating real-time segment cost evaluation with all 6 physical factor scorers active.
+- **Live Verification Results (18.50°N, 72.00°E)**:
+  - Ocean Current: `0.36 knots` towards `126.6°` (Copernicus Marine)
+  - Significant Wave ($H_s$): `2.46 meters`, `249.8°`, `9.8s` (Copernicus Marine)
+  - Wind Speed: `15.90 knots` from `263.0°` (Open-Meteo)
+  - Evaluated Segment Cost: `2.3894` (Navigable & Safe)
 
 ---
 

@@ -1,6 +1,7 @@
 """
 Marine and weather data acquisition module.
-Provides abstract provider interfaces, Copernicus Marine Service provider implementation,
+Provides abstract provider interfaces, Copernicus Marine Service provider,
+Open-Meteo atmospheric wind provider, composite data fusion provider,
 dataset specifications, and vector conversion utilities.
 """
 
@@ -23,6 +24,17 @@ from naudisha.data.copernicus_provider import (
     CopernicusAuthenticationError,
     CopernicusDataUnavailableError,
 )
+from naudisha.data.wind_provider import (
+    OpenMeteoWindProvider,
+    WindProviderError,
+    WindNetworkError,
+    WindDataUnavailableError,
+    WindResponseMalformedError,
+    KMH_TO_KNOTS,
+)
+from naudisha.data.composite_provider import (
+    CompositeEnvironmentalProvider,
+)
 
 __all__ = [
     "WeatherProvider",
@@ -31,6 +43,12 @@ __all__ = [
     "CopernicusProviderError",
     "CopernicusAuthenticationError",
     "CopernicusDataUnavailableError",
+    "OpenMeteoWindProvider",
+    "WindProviderError",
+    "WindNetworkError",
+    "WindDataUnavailableError",
+    "WindResponseMalformedError",
+    "CompositeEnvironmentalProvider",
     "CopernicusDatasetSpec",
     "CMEMS_OCEAN_CURRENTS_SPEC",
     "CMEMS_SURFACE_CURRENTS_HOURLY_SPEC",
@@ -38,4 +56,5 @@ __all__ = [
     "convert_current_vectors_to_speed_and_direction",
     "convert_speed_and_direction_to_vectors",
     "MS_TO_KNOTS",
+    "KMH_TO_KNOTS",
 ]
