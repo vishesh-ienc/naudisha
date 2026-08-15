@@ -124,7 +124,17 @@ The system is designed as a layered, modular maritime routing pipeline:
   - Non-interactive pre-flight credential checks prevent automated hanging on missing local credentials.
 - **Verification & Offline Test Suite (64/64 Tests Passing)**:
   - Added 7 offline unit tests in [`tests/test_copernicus_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_copernicus_provider.py) testing query construction, conversion, missing values, NaN handling, cache hits, and authentication error translation using dependency injection.
-  - Added live integration sample in [`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py) for Indian Ocean coordinates with helpful authentication guidance.
+  - Added live integration sample in [`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py).
+  - Resolved depth dimension coordinate query bounds (`depth_level = 0.5m`) ensuring clean execution without coordinate subset warnings.
+- **Live Integration Verification (Arabian Sea / Indian Ocean: 18.50°N, 72.00°E)**:
+  - **Status**: Live CMEMS Fetch Verified Successfully ✅
+  - **Retrieved Real Parameters**:
+    - Ocean Current Speed: `0.36 knots`
+    - Ocean Current Direction: `126.6°` (Flow heading towards SE)
+    - Significant Wave Height ($H_s$): `2.46 meters`
+    - Mean Wave Direction: `249.8°` (From WSW)
+    - Peak Wave Period ($T_p$): `9.8 seconds`
+    - Wind: `None` (Pending complementary atmospheric provider)
 
 ---
 

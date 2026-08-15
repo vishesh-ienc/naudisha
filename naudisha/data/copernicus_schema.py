@@ -51,7 +51,7 @@ CMEMS_OCEAN_CURRENTS_SPEC = CopernicusDatasetSpec(
     },
     spatial_resolution="0.083° x 0.083° (~9 km / 1/12°)",
     temporal_resolution="6-hourly instantaneous (PT6H-i)",
-    depth_level=0.494,  # Surface layer
+    depth_level=0.5,  # Surface layer (centered at 0.494m)
 )
 
 # 2. Alternative Hourly Surface Currents Dataset Specification

@@ -30,7 +30,7 @@ class TestCopernicusSchemas(unittest.TestCase):
         self.assertIn("vo", spec.variables)
         self.assertEqual(spec.variables["uo"][1], "m/s")
         self.assertEqual(spec.variables["vo"][1], "m/s")
-        self.assertEqual(spec.depth_level, 0.494)
+        self.assertEqual(spec.depth_level, 0.5)
 
     def test_surface_currents_hourly_spec_integrity(self):
         """Verifies hourly surface currents dataset specification."""

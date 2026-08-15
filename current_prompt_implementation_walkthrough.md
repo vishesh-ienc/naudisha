@@ -1,78 +1,32 @@
-# Current Prompt Implementation Walkthrough: Copernicus Marine Data Provider Implementation
+# Current Prompt Implementation Walkthrough: Copernicus Marine Live Verification & Depth Subset Refinement
 
 ## 🎯 Scope of Current Prompt
-- Implement the first real Copernicus Marine data provider for NauDisha: `CopernicusMarineProvider`.
-- Architecture data flow:
-  $$\text{Copernicus Marine} \longrightarrow \text{EnvironmentalData} \longrightarrow \text{CostModel} \longrightarrow \text{GeographicGridGraph} \longrightarrow D^* \text{ Lite}$$
-- Reuse existing Copernicus dataset schemas and mathematical vector conversion formulas (`cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i` and `cmems_mod_glo_wav_anfc_0.083deg_PT3H-i`).
-- Support targeted spatial/temporal point queries using `copernicusmarine.read_dataframe` to avoid downloading full datasets.
-- Handle ocean current vectors $(u_o, v_o)$ and spectral wave variables $(VHM0, VMDR, VTPK)$.
-- Explicitly set `wind_speed=None` and `wind_direction=None` (no mock wind invention) with backwards-compatible `Optional[float]` validation in `EnvironmentalData`.
-- Implement robust exception hierarchy (`CopernicusProviderError`, `CopernicusAuthenticationError`, `CopernicusDataUnavailableError`).
-- Add dependency injection to support fast offline unit testing without network/credential requirements.
-- Add live integration script [`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py).
-- Preserve 100% decoupling: zero modifications to D* Lite, `GeographicGridGraph`, or `CostModel` formulas.
+- Verify live Copernicus Marine Service data retrieval with active local user authentication.
+- Resolve the depth dimension subset boundary warning observed during physical oceanography queries.
+- Validate that live ocean currents (`uo`, `vo`) and spectral waves (`VHM0`, `VMDR`, `VTPK`) are retrieved cleanly and converted into `EnvironmentalData`.
+- Ensure offline unit test suite remains 100% functional with zero regressions (64/64 tests passing).
 
 ---
 
 ## 🛠 Changes Implemented
 
-### 1. `EnvironmentalData` Model Compatibility ([`naudisha/core/models.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/core/models.py))
-- Updated field annotations to `Optional[float] = None` with None-safe `__post_init__` validation.
-- Allows cleanly creating `EnvironmentalData` objects where wind data is pending from a secondary atmospheric provider without inventing dummy numbers.
+### 1. Depth Dimension Coordinate Refinement ([`naudisha/data/copernicus_schema.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/copernicus_schema.py), [`naudisha/data/copernicus_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/copernicus_provider.py))
+- **Issue**: Copernicus Physics dataset `cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i` has depth layer coordinates starting at `0.49402499m`. When querying `[0.0, 0.994m]`, Copernicus issued a non-fatal warning indicating `0.0m` is outside dataset coordinates.
+- **Fix**:
+  - Updated `CMEMS_OCEAN_CURRENTS_SPEC.depth_level = 0.5` (surface layer centered at 0.494m).
+  - Updated `_execute_subset_query` to pass exact depth bounds `minimum_depth=depth_level, maximum_depth=depth_level` (`0.5m`), allowing `coordinates_selection_method="nearest"` to match the surface layer with zero coordinate boundary warnings.
 
-### 2. `CopernicusMarineProvider` Implementation ([`naudisha/data/copernicus_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/copernicus_provider.py))
-- Implements `WeatherProvider.fetch_conditions(lat, lon, timestamp)`.
-- **Targeted Subsetting**: Queries minimal spatial window ($[\text{lat} \pm 0.1^\circ]$, $[\text{lon} \pm 0.1^\circ]$) and time window ($[t \pm 3\text{h}]$) via `copernicusmarine.read_dataframe` with `coordinates_selection_method="nearest"`.
-- **Ocean Currents Conversion**:
-  - Speed: $v_{\text{knots}} = \sqrt{u_o^2 + v_o^2} \times 1.9438444924$
-  - Direction: $\theta_{\text{flow}} = (90^\circ - \text{atan2}(v_o, u_o) \cdot \frac{180^\circ}{\pi} + 360^\circ) \pmod{360^\circ}$
-- **Ocean Waves Extraction**: Maps `VHM0` ($m$) to `wave_height`, `VMDR` ($^\circ$) to `wave_direction`, and `VTPK` ($s$) to `wave_period`.
-- **In-Memory Cache**: Automatically caches responses using `(round(lat, 2), round(lon, 2), timestamp_hour)` keys.
-- **Pre-Flight Credential Safety**: Checks for credential presence before network execution to avoid blocking automated tasks on interactive stdin.
-
-### 3. Module & Package Exports ([`naudisha/data/__init__.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/__init__.py), [`naudisha/__init__.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/__init__.py))
-- Exported `CopernicusMarineProvider`, `CopernicusProviderError`, `CopernicusAuthenticationError`, and `CopernicusDataUnavailableError`.
-
-### 4. Offline Unit Test Suite ([`tests/test_copernicus_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_copernicus_provider.py))
-- Added 7 offline unit tests using dependency-injected mock data readers:
-  - `test_successful_fetch_and_mapping`
-  - `test_in_memory_cache_hit`
-  - `test_missing_current_values_raises_error`
-  - `test_nan_current_values_raises_error`
-  - `test_missing_wave_values_raises_error`
-  - `test_authentication_error_handling`
-  - `test_coordinate_bounds_validation`
-
-### 5. Live Data Integration Sample ([`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py))
-- Script requesting a live sample for Arabian Sea / Indian Ocean coordinates ($18.50^\circ\text{N}, 72.00^\circ\text{E}$).
-- Cleanly outputs returned `EnvironmentalData` and provides actionable guidance if local credentials are required.
+### 2. Live Verification Demonstration ([`examples/fetch_copernicus_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_copernicus_sample.py))
+- Executed live sample fetch for Arabian Sea / Indian Ocean coordinates:
+  - Latitude: $18.50^\circ\text{N}$
+  - Longitude: $72.00^\circ\text{E}$
+  - Target Timestamp: `2026-08-15 12:00:00 UTC`
 
 ---
 
-## 🧪 Verification & Test Results
+## 🧪 Verification & Live Results
 
-### 1. Unit Test Suite (64/64 Tests Passed)
-```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
-```
-```
-test_authentication_error_handling (test_copernicus_provider.TestCopernicusMarineProvider.test_authentication_error_handling) ... ok
-test_coordinate_bounds_validation (test_copernicus_provider.TestCopernicusMarineProvider.test_coordinate_bounds_validation) ... ok
-test_in_memory_cache_hit (test_copernicus_provider.TestCopernicusMarineProvider.test_in_memory_cache_hit) ... ok
-test_missing_current_values_raises_error (test_copernicus_provider.TestCopernicusMarineProvider.test_missing_current_values_raises_error) ... ok
-test_missing_wave_values_raises_error (test_copernicus_provider.TestCopernicusMarineProvider.test_missing_wave_values_raises_error) ... ok
-test_nan_current_values_raises_error (test_copernicus_provider.TestCopernicusMarineProvider.test_nan_current_values_raises_error) ... ok
-test_successful_fetch_and_mapping (test_copernicus_provider.TestCopernicusMarineProvider.test_successful_fetch_and_mapping) ... ok
-... (All 57 previous unit tests: Copernicus schemas, D* Lite, Dijkstra oracle, Graph, CostModel) ...
-
-----------------------------------------------------------------------
-Ran 64 tests in 0.054s
-
-OK
-```
-
-### 2. Live Sample Output
+### 1. Live Fetch Output (`python examples/fetch_copernicus_sample.py`)
 ```
 ======================================================================
    NauDisha - Copernicus Marine Service Live Sample Data Fetch
@@ -87,8 +41,55 @@ OK
 [3] FETCHING LIVE OCEANOGRAPHIC CONDITIONS...
     - Querying Ocean Currents (uo, vo from Global Physics Forecast)...
     - Querying Wave Parameters (Hs, direction, period from Wave Forecast)...
+INFO - 2026-08-15T22:33:42Z - Selected dataset version: "202406"
+INFO - 2026-08-15T22:33:42Z - Selected dataset part: "default"
+INFO - 2026-08-15T22:33:53Z - Selected dataset version: "202411"
+INFO - 2026-08-15T22:33:53Z - Selected dataset part: "default"
 
-[!] AUTHENTICATION ERROR:
-    No local Copernicus Marine credentials found in ~/.copernicusmarine/ or environment variables. Please run 'copernicusmarine login' in your terminal to authenticate with your Copernicus account.
-    Please run 'copernicusmarine login' in your terminal to set up local credentials.
+======================================================================
+   [4] LIVE ENVIRONMENTALDATA RETURNED FROM COPERNICUS MARINE
+======================================================================
+    Timestamp:         2026-08-15T12:00:00+00:00
+    Current Speed:     0.36 knots
+    Current Direction: 126.6 deg (Flow heading)
+    Wave Height (Hs):  2.46 meters
+    Wave Direction:    249.8 deg (Incoming direction)
+    Wave Period (Tp):  9.8 seconds
+    Wind Speed:        None (Pending separate atmospheric provider)
+    Wind Direction:    None
+======================================================================
+
+[5] HYDRODYNAMIC EVALUATION WITH LIVE CURRENTS:
+    Vessel Cruising Speed: 18.0 knots
+    Live Ocean Current:    0.36 knots towards 126.6 deg
+
+======================================================================
+   COPERNICUS MARINE LIVE INTEGRATION COMPLETED SUCCESSFULLY
+======================================================================
+```
+
+### 2. Offline Unit Test Suite (64/64 Tests Passing)
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+```
+test_ocean_currents_spec_integrity ... ok
+test_surface_currents_hourly_spec_integrity ... ok
+test_waves_spec_integrity ... ok
+test_cardinal_directions ... ok
+test_mapping_to_environmental_data_model ... ok
+test_roundtrip_conversions ... ok
+test_authentication_error_handling ... ok
+test_coordinate_bounds_validation ... ok
+test_in_memory_cache_hit ... ok
+test_missing_current_values_raises_error ... ok
+test_missing_wave_values_raises_error ... ok
+test_nan_current_values_raises_error ... ok
+test_successful_fetch_and_mapping ... ok
+... (All 51 core routing, graph, cost model, and oracle tests) ...
+
+----------------------------------------------------------------------
+Ran 64 tests in 0.028s
+
+OK
 ```

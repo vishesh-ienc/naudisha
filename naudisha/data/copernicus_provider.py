@@ -166,8 +166,8 @@ class CopernicusMarineProvider(WeatherProvider):
         }
 
         if depth_level is not None:
-            query_kwargs["minimum_depth"] = max(0.0, depth_level - 0.5)
-            query_kwargs["maximum_depth"] = depth_level + 0.5
+            query_kwargs["minimum_depth"] = depth_level
+            query_kwargs["maximum_depth"] = depth_level
 
         try:
             df = reader(**query_kwargs)
