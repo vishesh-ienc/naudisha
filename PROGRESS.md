@@ -170,6 +170,49 @@ The system is designed as a layered, modular maritime routing pipeline:
 
 ---
 
-### Phase 6: Interactive Visual Dashboard & API (Upcoming) ⏳
+### Phase 6: Live Environmental Data Integration into GeographicGridGraph ✅ (Complete)
+
+**Goal**: Make `GeographicGridGraph` capable of receiving real oceanographic and atmospheric conditions on every edge automatically, without coupling the routing algorithm to any external API.
+
+#### Key Design Decisions
+- **Midpoint Sampling**: Each directed edge `(s → t)` is sampled at its geographic midpoint `((lat_s+lat_t)/2, (lon_s+lon_t)/2)` — the best single-point representation of the environmental conditions experienced during the transit.
+- **Dependency Injection**: `GeographicGridGraph.__init__` accepts an optional `environment_provider: WeatherProvider`. The graph holds a reference but never calls the provider directly during routing — only during explicit populate/refresh calls.
+- **Strict Responsibility Separation**: Provider → EnvironmentalData → CostModel → GridEdge.cost → D* Lite. No layer is skipped or collapsed.
+- **`GridEnvironmentUpdateError`**: Rich contextual error raised on provider failures, including source/target node IDs, midpoint lat/lon, and timestamp — enabling targeted retry or obstacle marking.
+
+#### New Graph Methods
+| Method | Description |
+|---|---|
+| `get_edge_midpoint(src_id, tgt_id)` | Returns geographic midpoint `(lat, lon)` of the directed edge |
+| `populate_environment(timestamp, provider, ship, weights)` | Queries all navigable edges sequentially, populates `env_data`, recomputes costs |
+| `refresh_edges(edges, timestamp, provider, ship, weights)` | Selective refresh — only the listed `(src, tgt)` pairs are updated |
+
+#### Verification
+- **80/80 offline unit tests pass** (8 new tests in `tests/test_grid_environment_integration.py`):
+  - Provider injection, midpoint coordinate accuracy, explicit timestamps
+  - Cost recalculation via CostModel on populated edges
+  - Selective refresh: unrelated edges remain unchanged
+  - Non-navigable obstacle edges skipped correctly
+  - `GridEnvironmentUpdateError` raised on provider failure with full context
+  - D* Lite plans optimal routes seamlessly on environment-populated grid
+
+#### Live Integration Demo (`examples/run_live_grid_routing_demo.py`)
+- **Grid**: 3×3, Arabian Sea corridor — `18.0°N–19.0°N, 71.0°E–72.0°E` (open water, no land mask)
+- **Live Data**: All 24 directed edge midpoints populated from real Copernicus Marine + Open-Meteo data
+- **Representative live edge conditions** (2026-08-15 12:00 UTC):
+
+| Edge | Midpoint | Current | Wave Hs | Wind | Cost |
+|---|---|---|---|---|---|
+| node_0_0 → node_0_1 | 18.00N, 71.25E | 0.31 kn @ 136° | 2.42 m | 18.7 kn @ 261° | 2.4093 |
+| node_1_1 → node_1_2 | 18.50N, 71.75E | 0.25 kn @ 125° | 2.49 m | 16.3 kn @ 262° | 2.3348 |
+| node_1_2 → node_2_2 | 18.75N, 72.00E | 0.37 kn @ 123° | 2.47 m | 15.5 kn @ 262° | 2.5634 |
+
+- **D* Lite optimal route**: `node_0_0 → node_0_1 → node_0_2 → node_1_2 → node_2_2`
+- **Total accumulated cost**: `9.9162`, **Distance**: `117.14 NM`, **Estimated transit**: `6.51 hours`
+- **Dijkstra oracle verification**: D* Lite cost = Dijkstra cost = `9.916245`, absolute delta = `0.000000e+00` ✅ **MATHEMATICAL MATCH**
+
+---
+
+### Phase 7: Interactive Visual Dashboard & API (Upcoming) ⏳
 - REST/WebSocket API for route planning requests and real-time voyage monitoring.
 - Interactive map frontend displaying vessel trajectory, weather overlays, and dynamic route adjustments.

@@ -1,157 +1,145 @@
-# Current Prompt Implementation Walkthrough: Open-Meteo Atmospheric Wind Provider & Multi-Source Fusion
+# Current Prompt: Live Environmental Data Integration into GeographicGridGraph
 
-## 🎯 Scope of Current Prompt
-- Implement the atmospheric wind provider for NauDisha using Open-Meteo's weather forecast API: `OpenMeteoWindProvider`.
-- Architecture data flow:
-  $$\begin{aligned}
-  \text{Copernicus Marine (Currents \& Waves)} &\searrow \\
-  &\quad \longrightarrow \text{EnvironmentalData} \longrightarrow \text{CostModel} \longrightarrow D^* \text{ Lite} \\
-  \text{Open-Meteo (10m Wind Vectors)} &\nearrow
-  \end{aligned}$$
-- Keep Copernicus Marine as the **primary** source for ocean currents (`uo`, `vo`) and wave spectra (`VHM0`, `VMDR`, `VTPK`).
-- Retrieve 10-meter surface wind parameters (`wind_speed_10m`, `wind_direction_10m`) from Open-Meteo.
-- Implement nearest hourly time index matching and native conversion to knots and degrees.
-- Create custom exception hierarchy (`WindProviderError`, `WindNetworkError`, `WindDataUnavailableError`, `WindResponseMalformedError`).
-- Implement dependency injection for 100% offline unit tests without network dependency.
-- Create live wind sample fetcher [`examples/fetch_wind_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_wind_sample.py).
-- Create unified multi-source data fusion demo [`examples/fetch_combined_environmental_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_combined_environmental_sample.py).
-- Ensure 100% decoupling: zero modifications to $D^*$ Lite, `GeographicGridGraph`, `CostModel` formulas, or Copernicus providers.
+## Goal
+
+Make `GeographicGridGraph` capable of being initialized and refreshed using the `CompositeEnvironmentalProvider` so that grid edges receive real environmental conditions automatically, feeding real-world marine data all the way into D* Lite routing — without coupling the routing algorithm to any external API.
 
 ---
 
-## 🛠 Changes Implemented
+## Architecture After This Prompt
 
-### 1. `OpenMeteoWindProvider` Implementation ([`naudisha/data/wind_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/wind_provider.py))
-- Implements `WeatherProvider.fetch_conditions(lat, lon, timestamp)`.
-- **API Endpoint**: `https://api.open-meteo.com/v1/forecast` requesting `wind_speed_10m,wind_direction_10m` with `wind_speed_unit=kn` and `timezone=UTC`.
-- **Time Selection**: `_find_nearest_hourly_index` searches `hourly.time` array and selects the closest forecast slice to requested UTC timestamp.
-- **Unit Conversions**: Automatically ensures output is in knots ($1\text{ km/h} = 0.539957\text{ kn}$, $1\text{ m/s} = 1.943844\text{ kn}$) and degrees $[0, 360)$.
-- **In-Memory Cache**: Automatically caches queries by `(round(lat, 2), round(lon, 2), timestamp_hour)`.
-- **Error Handling**: Converts HTTP errors, connection timeouts, malformed JSON, and NaN data into clean domain exceptions.
-
-### 2. Unified Composite Data Provider ([`naudisha/data/composite_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/composite_provider.py))
-- `CompositeEnvironmentalProvider` combines `CopernicusMarineProvider` and `OpenMeteoWindProvider`.
-- Fuses Copernicus hydrodynamic currents and spectral waves with Open-Meteo atmospheric wind into a single, fully populated `EnvironmentalData` model.
-
-### 3. Module & Package Exports ([`naudisha/data/__init__.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/__init__.py), [`naudisha/__init__.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/__init__.py))
-- Exported `OpenMeteoWindProvider`, `CompositeEnvironmentalProvider`, `WindProviderError`, `WindNetworkError`, `WindDataUnavailableError`, `WindResponseMalformedError`.
-
-### 4. Offline Unit Test Suite ([`tests/test_wind_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_wind_provider.py))
-- Added 8 offline unit tests using dependency injection:
-  - `test_successful_wind_parsing_and_mapping`
-  - `test_nearest_timestamp_selection`
-  - `test_unit_conversions`
-  - `test_in_memory_cache_hit`
-  - `test_missing_and_nan_values_raise_error`
-  - `test_malformed_response_schema_raises_error`
-  - `test_network_and_http_error_handling`
-  - `test_coordinate_bounds_validation`
-
-### 5. Live Demonstration Scripts
-- [`examples/fetch_wind_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_wind_sample.py): Fetches live wind data from Open-Meteo for $18.50^\circ\text{N}, 72.00^\circ\text{E}$.
-- [`examples/fetch_combined_environmental_sample.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/fetch_combined_environmental_sample.py): Fuses live Copernicus ocean currents and waves with live Open-Meteo wind and evaluates segment cost with `CostModel`.
+```
+Copernicus Marine (currents + waves)  ─┐
+                                       ├─→ CompositeEnvironmentalProvider
+Open-Meteo (10m wind vectors)         ─┘
+                                               │
+                                               ▼  fetch_conditions(lat, lon, timestamp)
+                                       EnvironmentalData
+                                               │
+                                               ▼  CostModel.evaluate_segment()
+                                       GridEdge.cost  ←  midpoint spatial sampling
+                                               │
+                                               ▼
+                                       GeographicGridGraph
+                                               │
+                                               ▼
+                                           D* Lite
+```
 
 ---
 
-## 🧪 Verification & Live Results
+## What Was Implemented
 
-### 1. Unit Test Suite (72/72 Tests Passed)
-```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
+### 1. Dependency Injection into `GeographicGridGraph`
+
+`GeographicGridGraph.__init__` now accepts an optional `environment_provider: Optional[WeatherProvider] = None`.
+
+The graph stores the reference but **never calls it during routing** — only during explicit `populate_environment()` or `refresh_edges()` calls. This preserves the strict decoupling between the routing algorithm and data providers.
+
+---
+
+### 2. Edge Midpoint Sampling — `get_edge_midpoint(src_id, tgt_id)`
+
+Each directed edge `s → t` is sampled at the geographic midpoint:
+
 ```
-```
-test_coordinate_bounds_validation (test_wind_provider.TestOpenMeteoWindProvider.test_coordinate_bounds_validation) ... ok
-test_in_memory_cache_hit (test_wind_provider.TestOpenMeteoWindProvider.test_in_memory_cache_hit) ... ok
-test_malformed_response_schema_raises_error (test_wind_provider.TestOpenMeteoWindProvider.test_malformed_response_schema_raises_error) ... ok
-test_missing_and_nan_values_raise_error (test_wind_provider.TestOpenMeteoWindProvider.test_missing_and_nan_values_raise_error) ... ok
-test_nearest_timestamp_selection (test_wind_provider.TestOpenMeteoWindProvider.test_nearest_timestamp_selection) ... ok
-test_network_and_http_error_handling (test_wind_provider.TestOpenMeteoWindProvider.test_network_and_http_error_handling) ... ok
-test_successful_wind_parsing_and_mapping (test_wind_provider.TestOpenMeteoWindProvider.test_successful_wind_parsing_and_mapping) ... ok
-test_unit_conversions (test_wind_provider.TestOpenMeteoWindProvider.test_unit_conversions) ... ok
-... (All 64 previous tests: Copernicus Marine, D* Lite, Dijkstra oracle, Graph, CostModel) ...
-
-----------------------------------------------------------------------
-Ran 72 tests in 0.031s
-
-OK
+lat_mid = (lat_s + lat_t) / 2
+lon_mid = (lon_s + lon_t) / 2
 ```
 
-### 2. Live Wind Sample Output (`python examples/fetch_wind_sample.py`)
-```
-======================================================================
-   NauDisha - Open-Meteo Atmospheric Wind Live Sample Fetch
-======================================================================
+**Rationale**: A ship traveling from `s` to `t` in a straight line experiences the environment at the midpoint as the best single-point average of conditions along that segment.
 
-[1] TARGET QUERY PARAMETERS:
-    Location:   (18.50N, 72.00E)
-    Timestamp:  2026-08-15T12:00:00Z
+---
 
-[2] INITIALIZING OPEN-METEO WIND PROVIDER...
+### 3. Full Grid Population — `populate_environment(timestamp, provider, ship, weights)`
 
-[3] FETCHING LIVE ATMOSPHERIC WIND DATA...
+- Iterates all directed edges in the graph.
+- Skips non-navigable edges (already `inf` cost — no wasted API calls).
+- Samples the provider at the edge midpoint with the explicit UTC timestamp.
+- Stores the returned `EnvironmentalData` on `edge.env_data`.
+- Recalculates `edge.cost` via `CostModel.evaluate_segment()`.
+- On any provider failure: raises `GridEnvironmentUpdateError` with full context (source, target, midpoint lat/lon, timestamp).
 
-======================================================================
-   [4] LIVE WIND DATA RETURNED FROM OPEN-METEO
-======================================================================
-    Timestamp:       2026-08-15T12:00:00+00:00
-    Wind Speed:      15.90 knots (10m surface)
-    Wind Direction:  263.0 deg (Direction wind arrives from)
-    Wave Height:     None (Sourced from Copernicus Marine)
-    Current Speed:   None (Sourced from Copernicus Marine)
-======================================================================
-   OPEN-METEO LIVE WIND FETCH COMPLETED SUCCESSFULLY
-======================================================================
-```
+---
 
-### 3. Unified Multi-Source Fusion Output (`python examples/fetch_combined_environmental_sample.py`)
-```
-======================================================================
-   NauDisha - Unified Multi-Source Environmental Data Fusion Demo
-   (Copernicus Marine Currents & Waves + Open-Meteo Wind Vectors)
-======================================================================
+### 4. Selective Edge Refresh — `refresh_edges(edges, timestamp, provider, ship, weights)`
 
-[1] VOYAGE WAYPOINT COORDINATES:
-    Position:   (18.50N, 72.00E)
-    Timestamp:  2026-08-15T12:00:00Z
+Accepts a list of `(src_id, tgt_id)` pairs. Only those specific edges are queried and updated. Unrelated edges remain unchanged. This supports targeted updates when environmental conditions change locally (e.g., a storm forming in one corridor).
 
-[2] INITIALIZING COMPOSITE DATA FUSION PROVIDER...
+---
 
-[3] FETCHING LIVE OCEANOGRAPHIC & ATMOSPHERIC CONDITIONS...
-INFO - 2026-08-15T22:37:00Z - Selected dataset version: "202406"
-INFO - 2026-08-15T22:37:00Z - Selected dataset part: "default"
-INFO - 2026-08-15T22:37:11Z - Selected dataset version: "202411"
-INFO - 2026-08-15T22:37:11Z - Selected dataset part: "default"
+### 5. `GridEnvironmentUpdateError`
 
-======================================================================
-   [4] UNIFIED LIVE ENVIRONMENTALDATA OBJECT
-======================================================================
-    Observation Timestamp: 2026-08-15T12:00:00+00:00
-    --- Ocean Hydrodynamics (Copernicus Marine Physics) ---
-    Current Speed:         0.36 knots
-    Current Direction:     126.6 deg (Flow heading)
-    --- Sea-State Spectrum (Copernicus Marine Waves) ---
-    Significant Wave (Hs): 2.46 meters
-    Wave Direction:        249.8 deg (Incoming)
-    Peak Wave Period (Tp): 9.8 seconds
-    --- Atmospheric Conditions (Open-Meteo 10m Wind) ---
-    Wind Speed:            15.90 knots
-    Wind Direction:        263.0 deg (From)
-======================================================================
+A new exception class that wraps provider failures with rich edge context:
+- Source node ID, target node ID
+- Midpoint latitude and longitude
+- Timestamp
+- Original exception
 
-[5] LIVE SEGMENT COST EVALUATION WITH UNIFIED DATA:
-    Segment Distance:     41.34 NM
-    Ship Heading:         43.4 deg
-    Effective Speed:      18.04 knots
-    Estimated Time:       2.29 hours
-    Time Score:           0.2290
-    Fuel Score:           0.7674
-    Wind Score:           0.0366
-    Wave Score:           0.1618
-    Current Score:        0.4958
-    Safety Score:         0.2650
-    TOTAL SEGMENT COST:   2.3894
+This allows callers to distinguish a graph structure error from a data provider failure, and to make targeted retry or obstacle decisions.
 
-======================================================================
-   UNIFIED ENVIRONMENTAL DATA FUSION VERIFIED SUCCESSFULLY
-======================================================================
-```
+---
+
+## Test Results
+
+**80/80 offline unit tests pass** (8 new tests in `tests/test_grid_environment_integration.py`):
+
+| # | Test | Status |
+|---|---|---|
+| 1 | Graph accepts injected WeatherProvider via constructor | OK |
+| 2-5 | `populate_environment()` queries at exact midpoints with explicit timestamp | OK |
+| 6-8 | EnvironmentalData stored on edge, cost recalculated via CostModel | OK |
+| 9-10 | `refresh_edges()` updates only requested pairs, leaves others unchanged | OK |
+| 11 | Provider failure raises `GridEnvironmentUpdateError` with full context | OK |
+| 12 | Non-navigable obstacle edges skipped — no provider calls | OK |
+| 13 | `populate_environment()` without provider raises `ValueError` | OK |
+| 14 | D* Lite plans optimal routes on environment-populated grid | OK |
+
+---
+
+## Live Integration Demo Results
+
+**Script**: `examples/run_live_grid_routing_demo.py`
+
+**Grid**: 3×3, Arabian Sea corridor — `18.0°N–19.0°N, 71.0°E–72.0°E` (open water)  
+**Timestamp**: `2026-08-15T12:00:00Z`  
+**Data sources**: Copernicus Marine (currents + waves) + Open-Meteo (10m wind)
+
+### Representative Live Edge Data
+
+| Edge | Midpoint | Current | Wave Hs | Wind | Cost |
+|---|---|---|---|---|---|
+| node_0_0 → node_1_0 | 18.25N, 71.00E | 0.34 kn @ 132° | 2.50 m | 18.2 kn @ 259° | 2.6725 |
+| node_0_0 → node_0_1 | 18.00N, 71.25E | 0.31 kn @ 136° | 2.42 m | 18.7 kn @ 261° | 2.4093 |
+| node_1_1 → node_2_1 | 18.75N, 71.50E | 0.24 kn @ 125° | 2.42 m | 16.8 kn @ 261° | 2.5941 |
+| node_1_1 → node_1_2 | 18.50N, 71.75E | 0.25 kn @ 125° | 2.49 m | 16.3 kn @ 262° | 2.3348 |
+| node_1_2 → node_2_2 | 18.75N, 72.00E | 0.37 kn @ 123° | 2.47 m | 15.5 kn @ 262° | 2.5634 |
+
+### D* Lite Pathfinding
+
+- **Optimal Route**: `node_0_0 → node_0_1 → node_0_2 → node_1_2 → node_2_2`
+- **Total Waypoints**: 5
+- **Accumulated Cost**: `9.9162`
+- **Total Distance**: `117.14 NM`
+- **Estimated Transit**: `6.51 hours (~0.27 days)`
+
+### Oracle Verification (Independent Dijkstra)
+
+| Metric | Value |
+|---|---|
+| D* Lite Cost | `9.916245` |
+| Dijkstra Oracle Cost | `9.916245` |
+| Absolute Delta | `0.000000e+00` |
+| Result | **MATHEMATICAL MATCH — 100% Globally Optimal [PASSED]** |
+
+---
+
+## Files Changed
+
+| File | Change |
+|---|---|
+| `naudisha/routing/graph.py` | Added `GridEnvironmentUpdateError`, `environment_provider` param, `get_edge_midpoint()`, `populate_environment()`, `refresh_edges()` |
+| `naudisha/routing/__init__.py` | Exported `GridEnvironmentUpdateError` |
+| `naudisha/__init__.py` | Exported `GridEnvironmentUpdateError` at root level |
+| `tests/test_grid_environment_integration.py` | 8 new offline integration unit tests |
+| `examples/run_live_grid_routing_demo.py` | End-to-end live demo with Dijkstra oracle verification |

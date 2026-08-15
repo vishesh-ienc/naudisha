@@ -24,6 +24,7 @@ from naudisha.routing.graph import (
     GridNode,
     GridEdge,
     GeographicGridGraph,
+    GridEnvironmentUpdateError,
 )
 from naudisha.routing.dstar_lite import DStarLite
 from naudisha.data import (
@@ -55,6 +56,7 @@ __all__ = [
     "GridNode",
     "GridEdge",
     "GeographicGridGraph",
+    "GridEnvironmentUpdateError",
     "DStarLite",
     "WeatherProvider",
     "MockWeatherProvider",

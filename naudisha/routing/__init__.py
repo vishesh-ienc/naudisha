@@ -8,6 +8,7 @@ from naudisha.routing.graph import (
     GridNode,
     GridEdge,
     GeographicGridGraph,
+    GridEnvironmentUpdateError,
 )
 from naudisha.routing.dstar_lite import (
     PriorityQueue,
@@ -19,6 +20,7 @@ __all__ = [
     "GridNode",
     "GridEdge",
     "GeographicGridGraph",
+    "GridEnvironmentUpdateError",
     "PriorityQueue",
     "DStarLite",
 ]

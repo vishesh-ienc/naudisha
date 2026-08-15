@@ -19,6 +19,12 @@ from naudisha.core.models import (
     SegmentEvaluation,
 )
 from naudisha.cost.model import CostModel
+from naudisha.data.weather_provider import WeatherProvider
+
+
+class GridEnvironmentUpdateError(Exception):
+    """Raised when an environmental data provider fails during graph initialization or edge refresh."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -125,11 +131,13 @@ class GeographicGridGraph:
         cost_model: Optional[CostModel] = None,
         default_ship: Optional[ShipProfile] = None,
         default_weights: Optional[CostWeights] = None,
+        environment_provider: Optional[WeatherProvider] = None,
     ) -> None:
         self.config = config
         self.cost_model = cost_model or CostModel()
         self.default_ship = default_ship
         self.default_weights = default_weights or CostWeights()
+        self.environment_provider = environment_provider
 
         self._nodes: Dict[str, GridNode] = {}
         self._grid_lookup: Dict[Tuple[int, int], str] = {}  # (row, col) -> node_id
@@ -423,3 +431,141 @@ class GeographicGridGraph:
         for (source_id, target_id), edge in self._edges.items():
             edge.env_data = env
             self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
+
+    def get_edge_midpoint(self, source_id: str, target_id: str) -> Tuple[float, float]:
+        """
+        Calculates the geographic midpoint (latitude, longitude) between source and target nodes.
+
+        Strategy rationale:
+            Sampling environmental conditions at the segment midpoint provides a balanced,
+            spatially representative approximation of the atmospheric and hydrodynamic regime
+            encountered by the vessel across the transit between the two waypoints.
+
+        Args:
+            source_id: Origin node ID.
+            target_id: Destination node ID.
+
+        Returns:
+            (midpoint_lat, midpoint_lon) in degrees.
+        """
+        source_node = self._nodes.get(source_id)
+        target_node = self._nodes.get(target_id)
+        if not source_node or not target_node:
+            raise KeyError(f"Invalid edge '{source_id}' -> '{target_id}'.")
+        mid_lat = (source_node.lat + target_node.lat) / 2.0
+        mid_lon = (source_node.lon + target_node.lon) / 2.0
+        return (mid_lat, mid_lon)
+
+    def populate_environment(
+        self,
+        timestamp: Union[datetime, str],
+        provider: Optional[WeatherProvider] = None,
+        ship: Optional[ShipProfile] = None,
+        weights: Optional[CostWeights] = None,
+    ) -> None:
+        """
+        Populates environmental conditions across all navigable directed edges in the grid
+        by querying the injected or supplied WeatherProvider at each edge's geographic midpoint.
+
+        Args:
+            timestamp: Explicit observation/forecast UTC timestamp (string or datetime).
+            provider: Optional WeatherProvider (falls back to self.environment_provider).
+            ship: Optional vessel profile (falls back to self.default_ship).
+            weights: Optional cost weights (falls back to self.default_weights).
+
+        Raises:
+            ValueError: If no provider is supplied or configured.
+            GridEnvironmentUpdateError: If the provider fails to fetch valid conditions for an edge.
+        """
+        active_provider = provider or self.environment_provider
+        if active_provider is None:
+            raise ValueError(
+                "A WeatherProvider must be provided either to populate_environment() "
+                "or configured as graph environment_provider."
+            )
+
+        vessel = ship or self.default_ship
+        w = weights or self.default_weights
+
+        for (source_id, target_id), edge in self._edges.items():
+            # Skip non-navigable edges (e.g. landmasses/obstacles) to avoid unnecessary external queries
+            source_node = self._nodes.get(source_id)
+            target_node = self._nodes.get(target_id)
+            if not source_node or not target_node or not source_node.is_navigable or not target_node.is_navigable:
+                edge.is_navigable = False
+                edge.cost = math.inf
+                edge.evaluation = None
+                continue
+
+            mid_lat, mid_lon = self.get_edge_midpoint(source_id, target_id)
+
+            try:
+                env = active_provider.fetch_conditions(lat=mid_lat, lon=mid_lon, timestamp=timestamp)
+            except Exception as exc:
+                raise GridEnvironmentUpdateError(
+                    f"Failed to fetch environmental data for edge '{source_id}' -> '{target_id}' "
+                    f"at sampling midpoint ({mid_lat:.4f}N, {mid_lon:.4f}E) for timestamp '{timestamp}': {exc}"
+                ) from exc
+
+            edge.env_data = env
+            self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
+
+    def refresh_edges(
+        self,
+        edges: List[Tuple[str, str]],
+        timestamp: Union[datetime, str],
+        provider: Optional[WeatherProvider] = None,
+        ship: Optional[ShipProfile] = None,
+        weights: Optional[CostWeights] = None,
+    ) -> None:
+        """
+        Selectively refreshes environmental conditions and recalculates costs in O(1) time
+        for a specific subset of directed edges.
+
+        Args:
+            edges: List of directed edge pairs [(source_id, target_id), ...].
+            timestamp: Explicit observation/forecast UTC timestamp.
+            provider: Optional WeatherProvider (falls back to self.environment_provider).
+            ship: Optional vessel profile (falls back to self.default_ship).
+            weights: Optional cost weights (falls back to self.default_weights).
+
+        Raises:
+            KeyError: If any specified edge does not exist in the graph.
+            GridEnvironmentUpdateError: If the provider fails for any refreshed edge.
+        """
+        active_provider = provider or self.environment_provider
+        if active_provider is None:
+            raise ValueError(
+                "A WeatherProvider must be provided either to refresh_edges() "
+                "or configured as graph environment_provider."
+            )
+
+        vessel = ship or self.default_ship
+        w = weights or self.default_weights
+
+        for source_id, target_id in edges:
+            edge = self._edges.get((source_id, target_id))
+            if not edge:
+                raise KeyError(f"Edge from '{source_id}' to '{target_id}' does not exist in graph.")
+
+            source_node = self._nodes.get(source_id)
+            target_node = self._nodes.get(target_id)
+            if not source_node or not target_node or not source_node.is_navigable or not target_node.is_navigable:
+                edge.is_navigable = False
+                edge.cost = math.inf
+                edge.evaluation = None
+                continue
+
+            mid_lat, mid_lon = self.get_edge_midpoint(source_id, target_id)
+
+            try:
+                env = active_provider.fetch_conditions(lat=mid_lat, lon=mid_lon, timestamp=timestamp)
+            except Exception as exc:
+                raise GridEnvironmentUpdateError(
+                    f"Failed to refresh environmental data for edge '{source_id}' -> '{target_id}' "
+                    f"at sampling midpoint ({mid_lat:.4f}N, {mid_lon:.4f}E) for timestamp '{timestamp}': {exc}"
+                ) from exc
+
+            edge.env_data = env
+            self.recalculate_edge_cost(source_id, target_id, ship=vessel, weights=w)
+
