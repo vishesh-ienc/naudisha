@@ -1,176 +1,159 @@
-# Current Prompt Implementation Walkthrough: D* Lite Algorithmic Audit & Correctness Validation
+# Current Prompt Implementation Walkthrough: Copernicus Marine Service Configuration & Dataset Identification
 
 ## 🎯 Scope of Current Prompt
-- Perform an in-depth mathematical audit of the D* Lite heuristic and core mechanics.
-- Fix heuristic admissibility for NauDisha's normalized multi-factor `CostModel`.
-- Implement an independent Dijkstra reference solver as a test oracle.
-- Add rigorous correctness tests verifying initial route optimality and dynamic incremental replanning optimality.
-- Validate that the dynamic storm replanning demo matches the Dijkstra oracle.
+- Pivot environmental data strategy from Open-Meteo to the official **Copernicus Marine Service (CMEMS)** as the primary oceanographic source.
+- Configure and verify Copernicus Marine access using the official `copernicusmarine` toolbox (v2.4.1).
+- Explore catalogue metadata and identify exact dataset IDs and variables for ocean currents (`uo`, `vo`) and waves (`VHM0`, `VMDR`, `VTPK`).
+- Design mathematical conversion formulas mapping CMEMS variables to NauDisha's `EnvironmentalData` model.
+- Add offline unit tests for schemas and conversions without network/credential dependencies.
+- Create a verification script demonstrating access, metadata discovery, and vector conversions.
+- Ensure strict credential privacy (never hardcoding or logging credentials; `.gitignore` exclusions).
+- Preserve 100% decoupling: zero modifications to D* Lite, `GeographicGridGraph`, `CostModel`, or scoring formulas.
 
 ---
 
 ## 🛠 Changes Implemented
 
-### 1. Heuristic Admissibility Fix ([`naudisha/routing/dstar_lite.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/routing/dstar_lite.py))
-- **Issue**: Unscaled raw Haversine distance in nautical miles (~30 NM per grid cell) exceeded the dimensionless normalized cost index (~1.5–3.5 cost units per cell), violating heuristic admissibility ($h(u, v) \le c^*(u, v)$) and compromising optimality guarantees.
-- **Fix**: Set default `heuristic_scale = 0.0` $\implies h(u, v) = 0.0$.
-  - Strictly admissible: $h(u, v) = 0 \le c^*(u, v)$ for all non-negative cost models.
-  - Monotonically consistent: $h(u, v) \le h(u, w) + c(w, v) \iff 0 \le 0 + c(w, v)$ since $c(w, v) \ge 0$.
-  - Allows configurable positive scaling when a proven minimum cost-per-NM lower bound is provided.
+### 1. Architecture Transition & Strategy
+- **Primary Source**: Copernicus Marine Service is established as the primary oceanographic provider for research-grade current and wave data.
+- **Wind Strategy**: Copernicus focuses on marine hydrodynamics; wind parameters (`wind_speed`, `wind_direction`) will be supplied by a complementary atmospheric provider (e.g., NOAA GFS or Open-Meteo) in a subsequent step.
+- **Provider Decoupling**: Kept `WeatherProvider` abstract interface in [`naudisha/data/weather_provider.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/weather_provider.py) completely decoupled.
 
-### 2. D* Lite Algorithmic Refinements ([`naudisha/routing/dstar_lite.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/routing/dstar_lite.py))
-- **Numerical Tolerance**: Added `is_key_less(key1, key2, eps=1e-9)` to prevent floating-point comparison inaccuracies during heap lookahead ordering.
-- **Deterministic Tie-Breaking**: Sorted successor node iteration during greedy path extraction for 100% reproducible routes.
-- **Batch Edge Updates**: Added `update_edges(edges)` to support updating multiple regional segments in a single step.
-- **Auto-$k_m$ Update**: Ensured $k_m = k_m + h(s_{\text{last}}, s_{\text{start}})$ is automatically synchronized prior to replanning if the vessel moved.
+### 2. Dependency & Security Configuration
+- **Package**: Added `copernicusmarine>=2.0.0` under optional dependencies in [`pyproject.toml`](file:///c:/Users/VISHESH/Desktop/naudisha/pyproject.toml).
+- **Toolbox Installation**: Installed `copernicusmarine==2.4.1` into the Python environment.
+- **Security & Privacy**: Updated [`.gitignore`](file:///c:/Users/VISHESH/Desktop/naudisha/.gitignore) to exclude `.copernicusmarine/`, `*.nc`, `*.grib`, and any local credential or raster data files. Local session authentication is managed exclusively through standard user profile credential storage.
 
-### 3. Independent Verification Oracle & Test Suite ([`tests/test_dstar_lite_correctness.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_dstar_lite_correctness.py))
-- Implemented an independent brute-force / Dijkstra solver `reference_dijkstra()` as a verification oracle.
-- Added 8 correctness tests covering:
-  - Initial route optimality against Dijkstra across multiple grid coordinates.
-  - Dynamic cost increases (storms) triggering incremental repair matching Dijkstra.
-  - Dynamic cost decreases (shortcuts opening) triggering incremental repair matching Dijkstra.
-  - Multiple simultaneous edge updates.
-  - Obstacle appearance and clearance transitions.
-  - Vessel movement along the path with subsequent dynamic replanning.
-  - Unreachable to reachable goal transitions.
-  - Strict path cost identity ($c_{\text{total}} = \sum c_i$).
+### 3. Discovered Datasets & Schema Specification ([`naudisha/data/copernicus_schema.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/data/copernicus_schema.py))
+Defined dataset specifications and conversion helpers:
 
-### 4. Interactive Demo Oracle Cross-Validation ([`examples/run_dstar_lite_demo.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/run_dstar_lite_demo.py))
-- Added live mathematical validation in the demonstration comparing D* Lite's replanned detour cost directly against the independent Dijkstra oracle.
+#### A. Ocean Currents (Physics)
+- **Product ID**: `GLOBAL_ANALYSISFORECAST_PHY_001_024`
+- **Primary Dataset ID**: `cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i`
+- **Variables**: `uo` (Eastward velocity, $m/s$), `vo` (Northward velocity, $m/s$)
+- **Depth Layer**: $0.494\text{ m}$ (Surface layer)
+- **Spatial Resolution**: $0.083^\circ \times 0.083^\circ$ (~9 km / $1/12^\circ$), Global coverage including Indian Ocean
+- **Temporal Resolution**: 6-hourly instantaneous
+- **Alternative Hourly Dataset**: `cmems_mod_glo_phy_anfc_merged-uv_PT1H-i` (`utotal`, `vtotal`, 1-hourly surface)
+
+#### B. Ocean Waves
+- **Product ID**: `GLOBAL_ANALYSISFORECAST_WAV_001_027`
+- **Dataset ID**: `cmems_mod_glo_wav_anfc_0.083deg_PT3H-i`
+- **Variables**: `VHM0` (Significant wave height, $m$), `VMDR` (Mean wave direction, $^\circ$), `VTPK` (Peak wave period, $s$)
+- **Spatial Resolution**: $0.083^\circ \times 0.083^\circ$ (~9 km)
+- **Temporal Resolution**: 3-hourly instantaneous
+
+### 4. Mathematical Vector & Variable Conversion Formulas
+- **Current Speed ($v_{\text{knots}}$)**:
+  $$v_{\text{magnitude}} = \sqrt{u_o^2 + v_o^2}\text{ m/s}$$
+  $$v_{\text{knots}} = v_{\text{magnitude}} \times 1.9438444924$$
+- **Current Flow Direction ($\theta_{\text{flow}}$)**:
+  $$\theta_{\text{flow}} = \left(90^\circ - \text{atan2}(v_o, u_o) \cdot \frac{180^\circ}{\pi} + 360^\circ\right) \pmod{360^\circ}$$
+  *(Oceanographic heading towards which current is flowing, $0^\circ = \text{North}, 90^\circ = \text{East}$)*
+- **Wave Parameters**:
+  - `wave_height` = `VHM0` ($m$)
+  - `wave_direction` = `VMDR` ($^\circ$)
+  - `wave_period` = `VTPK` ($s$)
+
+### 5. Verification Script ([`examples/verify_copernicus_access.py`](file:///c:/Users/VISHESH/Desktop/naudisha/examples/verify_copernicus_access.py))
+- Demonstrates active Copernicus Marine Toolbox version, session verification, metadata retrieval, and live vector conversions without exposing credentials.
 
 ---
 
-## 🧪 Verification Results
+## 🧪 Verification & Test Results
 
-### Unit Test Results (51/51 Tests Passed)
+### 1. Offline Unit Test Suite (57/57 Tests Passed)
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 ```
-test_bearing_cardinal_directions ... ok
-test_calculate_derived_metrics_integration ... ok
-test_distance_known_meridian ... ok
-test_distance_zero ... ok
-test_effective_speed ... ok
-test_favorable_current ... ok
-test_opposing_current ... ok
-test_relative_direction ... ok
-test_travel_time ... ok
-test_evaluate_segment_success ... ok
-test_extreme_weather_non_navigable ... ok
-test_non_navigable_segment_flag ... ok
-test_weighted_cost_formula ... ok
-test_basic_route_finding ... ok
-test_changed_edge_cost_causes_route_change ... ok
-test_incremental_replanning_vertex_updates ... ok
-test_moving_start ... ok
-test_obstacle_avoidance ... ok
-test_path_cost_consistency ... ok
-test_shortest_cost_route_selection ... ok
-test_unreachable_goal ... ok
-test_decrease_key_and_lazy_deletion ... ok
-test_priority_queue_ordering ... ok
-test_remove ... ok
-test_accumulated_path_cost_identity ... ok
-test_dynamic_edge_cost_decrease_optimality ... ok
-test_dynamic_edge_cost_increase_optimality ... ok
-test_initial_optimality_against_dijkstra ... ok
-test_moving_start_optimality ... ok
-test_multiple_simultaneous_edge_updates ... ok
-test_obstacle_appearing_and_disappearing ... ok
-test_unreachable_and_reachable_transitions ... ok
-test_edge_cost_calculation_through_cost_model ... ok
-test_edge_creation_count ... ok
-test_grid_config_validation ... ok
-test_grid_creation_and_node_count ... ok
-test_navigability_and_obstacles ... ok
-test_neighbor_generation_4_directions ... ok
-test_node_coordinates ... ok
-test_predecessors_and_successors ... ok
-test_updating_environmental_data_changes_cost ... ok
-test_clamp ... ok
-test_normalize_equal_bounds ... ok
-test_normalize_inverted ... ok
-test_normalize_standard ... ok
-test_current_score ... ok
-test_fuel_score ... ok
-test_safety_score ... ok
-test_time_score ... ok
-test_wave_score ... ok
-test_wind_score ... ok
+test_ocean_currents_spec_integrity (test_copernicus_metadata.TestCopernicusSchemas.test_ocean_currents_spec_integrity) ... ok
+test_surface_currents_hourly_spec_integrity (test_copernicus_metadata.TestCopernicusSchemas.test_surface_currents_hourly_spec_integrity) ... ok
+test_waves_spec_integrity (test_copernicus_metadata.TestCopernicusSchemas.test_waves_spec_integrity) ... ok
+test_cardinal_directions (test_copernicus_metadata.TestVectorConversions.test_cardinal_directions) ... ok
+test_mapping_to_environmental_data_model (test_copernicus_metadata.TestVectorConversions.test_mapping_to_environmental_data_model) ... ok
+test_roundtrip_conversions (test_copernicus_metadata.TestVectorConversions.test_roundtrip_conversions) ... ok
+... (All 51 previous tests including D* Lite, Graph, CostModel, Scorers, and Dijkstra Oracle) ...
 
 ----------------------------------------------------------------------
-Ran 51 tests in 0.024s
+Ran 57 tests in 0.021s
 
 OK
 ```
 
-### Demonstration Run Output
+### 2. Copernicus Access & Discovery Script Output
 ```
 ======================================================================
-   NauDisha - D* Lite Dynamic Ship Routing & Storm Replanning
+   NauDisha - Copernicus Marine Service Configuration & Discovery
 ======================================================================
 
-[1] VESSEL PROFILE:
-    Type:            Container Vessel (Panamax)
-    Cruising Speed:  18.0 knots (Max: 23.0 knots)
-
-[2] GEOGRAPHIC NAVIGATION GRID:
-    Dimensions:      5 rows x 5 cols (25 waypoints)
-    Origin:          (18.00 N, 72.00 E)
-    Coverage:        18.0 deg N - 20.0 deg N, 72.0 deg E - 74.0 deg E
-
-[3] VOYAGE OBJECTIVE:
-    Start Waypoint:  node_0_0 (18.0 N, 72.0 E)
-    Goal Waypoint:   node_4_4 (20.0 N, 74.0 E)
+[1] COPERNICUS MARINE TOOLBOX:
+    Toolbox Version: 2.4.1
+    Authentication:  Local Credential Session Active
 
 ----------------------------------------------------------------------
-   [4] INITIAL D* LITE OPTIMAL ROUTE (CALM BASELINE CONDITIONS)
+   [2] IDENTIFIED OCEAN CURRENTS (PHYSICS) DATASETS
 ----------------------------------------------------------------------
-    Total Route Cost: 15.1047
-    Waypoints (9 nodes):
-       node_0_0 (18.0N, 72.0E) ->
-       node_1_0 (18.5N, 72.0E) ->
-       node_2_0 (19.0N, 72.0E) ->
-       node_3_0 (19.5N, 72.0E) ->
-       node_4_0 (20.0N, 72.0E) ->
-       node_4_1 (20.0N, 72.5E) ->
-       node_4_2 (20.0N, 73.0E) ->
-       node_4_3 (20.0N, 73.5E) ->
-       node_4_4 (20.0N, 74.0E)
+   A. Primary 6-Hourly Instantaneous Current Vectors (3D Surface Layer):
+
+   [Dataset ID]:         cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i
+   [Product ID]:         GLOBAL_ANALYSISFORECAST_PHY_001_024
+   [Title]:              Global Ocean Physics Analysis and Forecast - Currents (Instantaneous)
+   [Spatial Resolution]: 0.083 deg x 0.083 deg (~9 km / 1/12 deg)
+   [Temporal Interval]:  6-hourly instantaneous (PT6H-i)
+   [Depth Level]:        0.494 m
+   [Coverage]:           Global (180W-180E, 80S-90N)
+   [Variables]:
+       * uo       -> Eastward water velocity (m/s)
+       * vo       -> Northward water velocity (m/s)
+
+   B. Alternative 1-Hourly Instantaneous Merged Surface UV Currents:
+
+   [Dataset ID]:         cmems_mod_glo_phy_anfc_merged-uv_PT1H-i
+   [Product ID]:         GLOBAL_ANALYSISFORECAST_PHY_001_024
+   [Title]:              Global Ocean Physics Analysis and Forecast - Merged UV Surface Currents
+   [Spatial Resolution]: 0.083 deg x 0.083 deg (~9 km)
+   [Temporal Interval]:  1-hourly instantaneous (PT1H-i)
+   [Depth Level]:        0.0 m
+   [Coverage]:           Global (180W-180E, 80S-90N)
+   [Variables]:
+       * utotal   -> Surface eastward total velocity (m/s)
+       * vtotal   -> Surface northward total velocity (m/s)
+
+----------------------------------------------------------------------
+   [3] IDENTIFIED OCEAN WAVES FORECAST DATASET
+----------------------------------------------------------------------
+
+   [Dataset ID]:         cmems_mod_glo_wav_anfc_0.083deg_PT3H-i
+   [Product ID]:         GLOBAL_ANALYSISFORECAST_WAV_001_027
+   [Title]:              Global Ocean Waves Analysis and Forecast - Spectral Wave Parameters
+   [Spatial Resolution]: 0.083 deg x 0.083 deg (~9 km / 1/12 deg)
+   [Temporal Interval]:  3-hourly instantaneous (PT3H-i)
+   [Depth Level]:        Surface Spectrum
+   [Coverage]:           Global (180W-180E, 80S-90N)
+   [Variables]:
+       * VHM0     -> Spectral significant wave height (Hs) (m)
+       * VMDR     -> Mean wave direction from which waves propagate (degrees)
+       * VTPK     -> Peak wave period (Tp) (s)
 
 ======================================================================
-   [5] DYNAMIC ENVIRONMENTAL UPDATE: SEVERE STORM INTERCEPT
-   Storm hits segment: 'node_0_0' -> 'node_1_0'
+   [4] MATHEMATICAL VECTOR CONVERSION DEMONSTRATION
 ======================================================================
-    Initial Edge Cost:  1.8881
-    Updated Storm Cost: 4.6546 (+2.7664 cost surge)
-
-----------------------------------------------------------------------
-   [6] D* LITE INCREMENTAL REPLANNED ROUTE (STORM DETOUR)
-----------------------------------------------------------------------
-    New Route Cost:   15.1048
-    Waypoints (9 nodes):
-       node_0_0 (18.0N, 72.0E) ->
-       node_0_1 (18.0N, 72.5E) ->
-       node_1_1 (18.5N, 72.5E) ->
-       node_2_1 (19.0N, 72.5E) ->
-       node_3_1 (19.5N, 72.5E) ->
-       node_4_1 (20.0N, 72.5E) ->
-       node_4_2 (20.0N, 73.0E) ->
-       node_4_3 (20.0N, 73.5E) ->
-       node_4_4 (20.0N, 74.0E)
+    Sample Copernicus Vectors:  uo = +0.52 m/s, vo = +0.88 m/s
+    Converted Speed (knots):    1.99 knots (1 m/s = 1.943844 kn)
+    Converted Direction (deg):  30.6 deg (Oceanographic flow heading)
 
 ======================================================================
-   [7] ROUTE COMPARISON & MATHEMATICAL VERIFICATION
+   [5] ENVIRONMENTALDATA INTEGRATION ROADMAP
 ======================================================================
-    Initial Route:       node_0_0 -> node_1_0 -> node_2_0 -> node_3_0 -> node_4_0 -> node_4_1 -> node_4_2 -> node_4_3 -> node_4_4
-    Detoured Route:      node_0_0 -> node_0_1 -> node_1_1 -> node_2_1 -> node_3_1 -> node_4_1 -> node_4_2 -> node_4_3 -> node_4_4
-    Avoided Storm ('node_0_0' -> 'node_1_0'): True
-    Cost without Detour (taking storm):    17.8712
-    Cost with D* Lite Optimal Detour:      15.1048
-    Independent Dijkstra Oracle Cost:      15.1048
-    Mathematical Optimality Verified:      True (D* Lite cost == Dijkstra oracle)
+    * wave_height        <-- CMEMS VHM0 (Spectral significant wave height, m)
+    * wave_direction     <-- CMEMS VMDR (Mean wave direction, deg)
+    * wave_period        <-- CMEMS VTPK (Peak wave period, s)
+    * current_speed      <-- CMEMS sqrt(uo^2 + vo^2) * 1.943844 (knots)
+    * current_direction  <-- CMEMS (90 - atan2(vo, uo)) mod 360 (deg)
+    * wind_speed         <-- Atmospheric Provider (e.g. NOAA GFS / Open-Meteo)
+    * wind_direction     <-- Atmospheric Provider
+======================================================================
+   COPERNICUS MARINE ACCESS & METADATA DISCOVERY VERIFIED
 ======================================================================
 ```

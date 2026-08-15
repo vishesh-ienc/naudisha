@@ -60,3 +60,12 @@ venv.bak/
 # OS specific
 .DS_Store
 Thumbs.db
+
+# Copernicus Marine Service credentials & data
+.copernicusmarine/
+*.nc
+*.nc4
+*.grib
+*.grib2
+*.geotiff
+

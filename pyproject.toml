@@ -30,6 +30,9 @@ dependencies = []
 dev = [
     "pytest>=7.0.0",
 ]
+marine = [
+    "copernicusmarine>=2.0.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
