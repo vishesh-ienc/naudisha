@@ -31,9 +31,10 @@ naudisha/
 ├── cost/                  # Multi-factor cost model engine
 │   ├── scorers.py         # Modular scoring functions (0 = Best, 1 = Worst)
 │   └── model.py           # CostModel class, weighted sum, and non-navigability handling
-├── routing/               # Future D* Lite graph search engine & dynamic replanning interfaces
+├── routing/               # Geographic grid/graph layer and future D* Lite path planning
+│   ├── graph.py           # GeographicGridGraph, GridNode, GridEdge with O(1) dynamic updates
 │   └── dstar_lite.py      # Abstract routing engine and D* Lite interfaces
-├── data/                  # Future marine and weather forecast providers
+├── data/                  # Marine and weather forecast providers
 │   └── weather_provider.py# WeatherProvider interface & mock simulation provider
 └── api/                   # Future API / Dashboard adapters
 ```

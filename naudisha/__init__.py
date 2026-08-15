@@ -19,6 +19,12 @@ from naudisha.core.models import (
     SegmentEvaluation,
 )
 from naudisha.cost.model import CostModel
+from naudisha.routing.graph import (
+    GridConfig,
+    GridNode,
+    GridEdge,
+    GeographicGridGraph,
+)
 
 __all__ = [
     "ShipProfile",
@@ -30,4 +36,8 @@ __all__ = [
     "SegmentScores",
     "SegmentEvaluation",
     "CostModel",
+    "GridConfig",
+    "GridNode",
+    "GridEdge",
+    "GeographicGridGraph",
 ]
