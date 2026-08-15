@@ -1,6 +1,6 @@
 """
 Routing package for dynamic graph path planning (D* Lite).
-Provides spatial grid/graph models and dynamic routing engine interfaces.
+Provides spatial grid/graph models and the incremental D* Lite routing engine.
 """
 
 from naudisha.routing.graph import (
@@ -10,10 +10,8 @@ from naudisha.routing.graph import (
     GeographicGridGraph,
 )
 from naudisha.routing.dstar_lite import (
-    NavNode,
-    NavEdge,
-    RoutingEngine,
-    DStarLiteRouter,
+    PriorityQueue,
+    DStarLite,
 )
 
 __all__ = [
@@ -21,8 +19,6 @@ __all__ = [
     "GridNode",
     "GridEdge",
     "GeographicGridGraph",
-    "NavNode",
-    "NavEdge",
-    "RoutingEngine",
-    "DStarLiteRouter",
+    "PriorityQueue",
+    "DStarLite",
 ]

@@ -25,6 +25,7 @@ from naudisha.routing.graph import (
     GridEdge,
     GeographicGridGraph,
 )
+from naudisha.routing.dstar_lite import DStarLite
 
 __all__ = [
     "ShipProfile",
@@ -40,4 +41,5 @@ __all__ = [
     "GridNode",
     "GridEdge",
     "GeographicGridGraph",
+    "DStarLite",
 ]

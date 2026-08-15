@@ -80,16 +80,28 @@ The system is designed as a layered, modular maritime routing pipeline:
 
 ---
 
-### Phase 3: D* Lite Dynamic Replanning Engine (Next) ⏳
-**Goal**: Implement real-time incremental pathfinding over the navigation graph.
-- Implement priority queue with D* Lite lexicographical keys $(k_1, k_2)$.
-- Implement $rhs$ and $g$-value trackers for all grid nodes.
-- Initial path planning from start node to goal node.
-- Dynamic route repair when edge costs change mid-voyage due to forecast updates.
+### Phase 3: D* Lite Dynamic Pathfinding Engine ✅
+**Status**: Completed
+
+- **Core Algorithm Implementation**:
+  - Implemented the full incremental heuristic search algorithm by Koenig & Likhachev in [`naudisha/routing/dstar_lite.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/routing/dstar_lite.py).
+  - Priority queue with lexicographic keys:
+    $$k(u) = [\min(g(u), rhs(u)) + h(s_{\text{start}}, u) + k_m, \min(g(u), rhs(u))]$$
+  - Admissible, consistent great-circle Haversine distance heuristic.
+  - One-step lookahead $rhs(u)$ and cost-to-goal $g(u)$ tracking with lazy-deletion min-heap.
+  - Moving start position support with accumulated heuristic modifier $k_m = k_m + h(s_{\text{last}}, s_{\text{start}})$.
+  - Backward search from goal to start for rapid incremental path repair.
+- **Dynamic Incremental Replanning**:
+  - `update_edge(u, v)` updates only vertex $u$'s $rhs(u)$ value in $O(1)$ time when marine forecasts change.
+  - `update_node(u)` updates vertex $u$ and its incoming predecessors/outgoing successors when obstacle/navigability flags change.
+  - `replan()` incrementally repairs the shortest path tree without running $A^*$/Dijkstra from scratch or rebuilding the graph.
+- **Verification**:
+  - 11 new unit tests in `tests/test_dstar_lite.py` covering route planning, obstacle avoidance, unreachable targets, moving starts, and incremental replanning (43/43 total unit tests passing).
+  - Created interactive demonstration `examples/run_dstar_lite_demo.py` showcasing dynamic storm intercept and optimal detour replanning.
 
 ---
 
-### Phase 4: Marine Data Integration & Dynamic Adapters (Upcoming) ⏳
+### Phase 4: Marine Data Integration & Dynamic Adapters (Next) ⏳
 - Ingest real meteorological and oceanographic raster/GRIB data (Copernicus Marine, NOAA WW3/GFS).
 - Interpolate dynamic weather grids onto the navigation graph.
 
