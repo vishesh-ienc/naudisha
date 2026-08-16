@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional, Tuple, Union
 
 from naudisha.core.calculations import calculate_haversine_distance
@@ -39,12 +39,14 @@ logger = logging.getLogger("naudisha.api.services")
 @dataclass
 class RoutePlanResult:
     """Domain model output for a planned route calculation."""
-    imo_number: str
+    imo_number: Optional[str]
     status: str
     route: List[Tuple[float, float]]  # List of (latitude, longitude) tuples
     distance_nm: float
     estimated_time_hours: float
     total_cost: float
+    departure_time: str  # ISO-8601 UTC timestamp string
+    eta: str             # ISO-8601 UTC timestamp string
 
 
 class RoutePlanningService:
@@ -100,26 +102,28 @@ class RoutePlanningService:
 
     def plan_preview_route(
         self,
-        imo_number: str,
+        imo_number: Optional[str],
         start_lat: float,
         start_lon: float,
         dest_lat: float,
         dest_lon: float,
         timestamp: Optional[Union[datetime, str]] = None,
+        ship_profile: Optional[ShipProfile] = None,
     ) -> RoutePlanResult:
         """
         Calculates an optimal route between start and destination coordinates.
 
         Args:
-            imo_number: Ship identifier string.
+            imo_number: Optional ship identifier string.
             start_lat: Departure latitude [-90.0, 90.0].
             start_lon: Departure longitude [-180.0, 180.0].
             dest_lat: Destination latitude [-90.0, 90.0].
             dest_lon: Destination longitude [-180.0, 180.0].
             timestamp: Optional UTC timestamp for environmental sampling.
+            ship_profile: Optional vessel profile (falls back to service default).
 
         Returns:
-            RoutePlanResult containing waypoints, distance, time, and cost.
+            RoutePlanResult containing waypoints, distance, time, cost, departure_time, and eta.
 
         Raises:
             InvalidCoordinatesError: If coordinates are out of bounds.
@@ -132,6 +136,21 @@ class RoutePlanningService:
         if not (-180.0 <= start_lon <= 180.0 and -180.0 <= dest_lon <= 180.0):
             raise InvalidCoordinatesError("Longitude must be between -180.0 and 180.0 degrees.")
 
+        # Effective ship profile
+        effective_ship = ship_profile or self.ship_profile
+
+        # Effective departure time (defaults to real current UTC time)
+        if timestamp is None:
+            dep_dt = datetime.now(timezone.utc)
+        elif isinstance(timestamp, datetime):
+            dep_dt = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=timezone.utc)
+        else:
+            dep_dt = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+            if dep_dt.tzinfo is None:
+                dep_dt = dep_dt.replace(tzinfo=timezone.utc)
+
+        dep_iso = dep_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
         # Zero-distance edge case
         if math_isclose_coords(start_lat, start_lon, dest_lat, dest_lon):
             return RoutePlanResult(
@@ -141,22 +160,23 @@ class RoutePlanningService:
                 distance_nm=0.0,
                 estimated_time_hours=0.0,
                 total_cost=0.0,
+                departure_time=dep_iso,
+                eta=dep_iso,
             )
 
         # 2. Build or retrieve graph covering voyage corridor
         if self.graph_factory:
             graph = self.graph_factory(start_lat, start_lon, dest_lat, dest_lon)
         else:
-            graph = self._build_bounding_grid(start_lat, start_lon, dest_lat, dest_lon)
+            graph = self._build_bounding_grid(start_lat, start_lon, dest_lat, dest_lon, ship=effective_ship)
 
         # 3. Populate environment using BatchCapableProvider pipeline
-        ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT12:00:00Z")
         if self.environment_provider is not None:
             try:
                 graph.populate_environment(
-                    timestamp=ts,
+                    timestamp=dep_iso,
                     provider=self.environment_provider,
-                    ship=self.ship_profile,
+                    ship=effective_ship,
                     weights=self.default_weights,
                 )
             except GridEnvironmentUpdateError as exc:
@@ -168,7 +188,7 @@ class RoutePlanningService:
         else:
             # Baseline calm maritime conditions if explicitly unconfigured
             baseline_env = EnvironmentalData(
-                timestamp=ts,
+                timestamp=dep_iso,
                 current_speed=0.2,
                 current_direction=90.0,
                 wave_height=1.0,
@@ -179,7 +199,7 @@ class RoutePlanningService:
             )
             graph.populate_uniform_environment(
                 env=baseline_env,
-                ship=self.ship_profile,
+                ship=effective_ship,
                 weights=self.default_weights,
             )
 
@@ -226,7 +246,11 @@ class RoutePlanningService:
                 if n1 and n2:
                     d = calculate_haversine_distance(n1.lat, n1.lon, n2.lat, n2.lon)
                     total_nm += d
-                    total_hours += d / max(self.ship_profile.cruising_speed, 1.0)
+                    total_hours += d / max(effective_ship.cruising_speed, 1.0)
+
+        # 7. Compute ETA
+        eta_dt = dep_dt + timedelta(hours=total_hours)
+        eta_iso = eta_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         return RoutePlanResult(
             imo_number=imo_number,
@@ -235,6 +259,8 @@ class RoutePlanningService:
             distance_nm=round(total_nm, 2),
             estimated_time_hours=round(total_hours, 2),
             total_cost=round(cost, 2),
+            departure_time=dep_iso,
+            eta=eta_iso,
         )
 
     def _build_bounding_grid(
@@ -243,6 +269,7 @@ class RoutePlanningService:
         start_lon: float,
         dest_lat: float,
         dest_lon: float,
+        ship: Optional[ShipProfile] = None,
     ) -> GeographicGridGraph:
         """
         Constructs a regular navigation grid covering the bounding corridor
@@ -288,7 +315,7 @@ class RoutePlanningService:
         return GeographicGridGraph(
             config=config,
             cost_model=self.cost_model,
-            default_ship=self.ship_profile,
+            default_ship=ship or self.ship_profile,
             default_weights=self.default_weights,
             environment_provider=self.environment_provider,
         )

@@ -1,13 +1,33 @@
 """
 Pydantic data schemas and validation models for NauDisha Backend API.
-Strictly adheres to docs/API_CONTRACT.md conventions.
+Strictly adheres to docs/API_CONTRACT.md conventions (v2).
 """
 
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing_extensions import Self
+
+from naudisha.core.models import ShipProfile
+
+
+def validate_iso_8713_imo(v: str) -> str:
+    """
+    Validates a 7-digit IMO number according to ISO 8713.
+    Multiplies first 6 digits by weights [7, 6, 5, 4, 3, 2], sums them,
+    and checks if sum % 10 equals the 7th digit.
+    """
+    cleaned = v.strip() if isinstance(v, str) else ""
+    if not re.match(r"^\d{7}$", cleaned):
+        raise ValueError("IMO number must be exactly 7 digits.")
+    weights = (7, 6, 5, 4, 3, 2)
+    checksum = sum(int(d) * w for d, w in zip(cleaned[:6], weights)) % 10
+    if checksum != int(cleaned[6]):
+        raise ValueError("IMO number check digit is invalid (ISO 8713).")
+    return cleaned
 
 
 class Coordinate(BaseModel):
@@ -34,14 +54,66 @@ class HealthResponse(BaseModel):
     service: str = Field("naudisha-backend", description="Service identifier name")
 
 
+class ShipProfileSchema(BaseModel):
+    """
+    Vessel static and hydrodynamic characteristics.
+    Uses explicit unit suffixes matching API Contract v2 §2.4.
+    """
+    ship_type: str = Field(..., description="Vessel classification")
+    length_m: float = Field(..., gt=0.0, description="Overall length (LOA) in meters")
+    beam_m: float = Field(..., gt=0.0, description="Width at widest point in meters")
+    draft_m: float = Field(..., gt=0.0, description="Maximum submerged depth in meters")
+    cruising_speed_kn: float = Field(..., gt=0.0, description="Design service speed in knots")
+    max_speed_kn: float = Field(..., gt=0.0, description="Maximum operational speed in knots")
+
+    @model_validator(mode="after")
+    def validate_speeds(self) -> Self:
+        if self.max_speed_kn < self.cruising_speed_kn:
+            raise ValueError("max_speed_kn cannot be less than cruising_speed_kn.")
+        return self
+
+    def to_domain_model(self) -> ShipProfile:
+        """Converts API schema to internal core ShipProfile domain model."""
+        return ShipProfile(
+            ship_type=self.ship_type,
+            length=self.length_m,
+            beam=self.beam_m,
+            draft=self.draft_m,
+            cruising_speed=self.cruising_speed_kn,
+            maximum_speed=self.max_speed_kn,
+        )
+
+    @classmethod
+    def from_domain_model(cls, profile: ShipProfile) -> ShipProfileSchema:
+        """Creates an API schema instance from internal ShipProfile domain model."""
+        return cls(
+            ship_type=profile.ship_type,
+            length_m=profile.length,
+            beam_m=profile.beam,
+            draft_m=profile.draft,
+            cruising_speed_kn=profile.cruising_speed,
+            max_speed_kn=profile.maximum_speed,
+        )
+
+
+DEFAULT_SHIP_PROFILE_SCHEMA = ShipProfileSchema(
+    ship_type="Container Vessel (Panamax)",
+    length_m=294.0,
+    beam_m=32.2,
+    draft_m=12.0,
+    cruising_speed_kn=18.0,
+    max_speed_kn=23.0,
+)
+
+
 class RoutePreviewRequest(BaseModel):
     """
     Request schema for calculating an optimal route preview.
     POST /api/routes/preview
     """
-    imo_number: str = Field(
-        ...,
-        description="Ship IMO number represented as a string (e.g. '1234567')",
+    imo_number: Optional[str] = Field(
+        None,
+        description="Ship IMO number represented as a 7-digit string (e.g. '1234567')",
         examples=["1234567"],
     )
     start: Coordinate = Field(
@@ -52,14 +124,42 @@ class RoutePreviewRequest(BaseModel):
         ...,
         description="Target destination coordinates",
     )
+    departure_time: Optional[str] = Field(
+        None,
+        description="ISO 8601 UTC departure timestamp",
+        examples=["2026-08-20T06:00:00Z"],
+    )
+    ship: Optional[ShipProfileSchema] = Field(
+        None,
+        description="Optional vessel characteristics to use for routing cost calculations",
+    )
 
     @field_validator("imo_number")
     @classmethod
-    def validate_imo(cls, v: str) -> str:
-        cleaned = v.strip() if isinstance(v, str) else ""
-        if not cleaned or not re.match(r"^\d{6,8}$", cleaned):
-            raise ValueError("IMO number must be a valid numeric string of 6-8 digits (e.g. '1234567').")
+    def validate_imo(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return validate_iso_8713_imo(v)
+
+    @field_validator("departure_time")
+    @classmethod
+    def validate_departure_time(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.strip()
+        if not cleaned:
+            return None
+        try:
+            datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        except Exception as exc:
+            raise ValueError(f"Invalid ISO 8601 UTC departure_time format: {cleaned}") from exc
         return cleaned
+
+    @model_validator(mode="after")
+    def validate_imo_or_ship(self) -> Self:
+        if self.imo_number is None and self.ship is None:
+            raise ValueError("At least one of imo_number or ship must be provided.")
+        return self
 
 
 class RoutePreviewResponse(BaseModel):
@@ -67,8 +167,10 @@ class RoutePreviewResponse(BaseModel):
     Response schema for route preview calculation.
     POST /api/routes/preview
     """
-    imo_number: str = Field(..., description="Ship IMO number")
-    status: str = Field("route_ready", description="Route planning status ('route_ready', 'optimal')")
+    imo_number: Optional[str] = Field(None, description="Echoed ship IMO number or null for IMO-less routing")
+    status: str = Field("route_ready", description="Route planning status ('route_ready')")
+    departure_time: str = Field(..., description="The departure time actually used (ISO 8601 UTC)")
+    eta: str = Field(..., description="Estimated time of arrival (ISO 8601 UTC)")
     route: List[Coordinate] = Field(..., description="Ordered list of route waypoints from start to destination")
     distance_nm: float = Field(..., description="Total route distance in nautical miles")
     estimated_time_hours: float = Field(..., description="Estimated voyage transit duration in hours")
@@ -77,15 +179,12 @@ class RoutePreviewResponse(BaseModel):
 
 class ShipIdentifyRequest(BaseModel):
     """Request schema to create or identify a ship."""
-    imo_number: str = Field(..., description="Ship IMO number as a string")
+    imo_number: str = Field(..., description="Ship IMO number as a 7-digit string")
 
     @field_validator("imo_number")
     @classmethod
     def validate_imo(cls, v: str) -> str:
-        cleaned = v.strip() if isinstance(v, str) else ""
-        if not cleaned or not re.match(r"^\d{6,8}$", cleaned):
-            raise ValueError("IMO number must be a valid numeric string of 6-8 digits (e.g. '1234567').")
-        return cleaned
+        return validate_iso_8713_imo(v)
 
 
 class ShipResponse(BaseModel):
@@ -94,6 +193,40 @@ class ShipResponse(BaseModel):
     name: str = "Demo Vessel"
     status: str = "underway"  # "underway", "stopped", "unknown"
     position: Coordinate
+    ship: ShipProfileSchema
+
+
+class TrackingStartRequest(BaseModel):
+    """Request schema to begin ship tracking."""
+    destination: Coordinate = Field(..., description="Voyage destination coordinates")
+
+
+class TrackingStartResponse(BaseModel):
+    """Response schema for start tracking."""
+    imo_number: str
+    tracking: bool = True
+    message: str = "Ship tracking started"
+
+
+class ShipStatusResponse(BaseModel):
+    """Ship status query response schema."""
+    imo_number: str
+    status: str = "underway"  # "underway", "stopped", "unknown"
+    position: Coordinate
+    destination: Optional[Coordinate] = None
+    timestamp: str
+
+
+class ShipRouteResponse(BaseModel):
+    """Ship current route query response schema."""
+    imo_number: str
+    route_status: str = "optimal"  # "optimal", "updating", "unavailable"
+    destination: Optional[Coordinate] = None
+    route: List[Coordinate]
+    distance_nm: float
+    estimated_time_hours: float
+    total_cost: float
+    updated_at: str
 
 
 class ErrorDetail(BaseModel):

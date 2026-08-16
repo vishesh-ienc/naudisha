@@ -1,6 +1,6 @@
 """
 API error exceptions and standardized exception handlers for NauDisha Backend.
-Strictly maps domain & validation errors to docs/API_CONTRACT.md structure.
+Strictly maps domain & validation errors to docs/API_CONTRACT.md structure (v2).
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("naudisha.api")
+
+HTTP_422 = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422)
 
 
 # -----------------------------------------------------------------------------
@@ -41,7 +43,7 @@ class InvalidIMOError(APIException):
         super().__init__(
             code="INVALID_IMO",
             message=message,
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=HTTP_422,
         )
 
 
@@ -63,7 +65,7 @@ class InvalidCoordinatesError(APIException):
         super().__init__(
             code="INVALID_COORDINATES",
             message=message,
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=HTTP_422,
         )
 
 
@@ -154,7 +156,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
         combined_message = "; ".join(msg_parts) or "Request validation failed."
         return JSONResponse(
-            status_code=422,
+            status_code=HTTP_422,
             content={
                 "error": {
                     "code": code,

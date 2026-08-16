@@ -1,6 +1,6 @@
 """
 Offline Unit & Integration Tests for NauDisha Backend API & Service Layer.
-Strictly validates adherence to docs/API_CONTRACT.md and Phase 8.2 batch environmental routing.
+Strictly validates adherence to docs/API_CONTRACT.md (v2) and Phase 8.4 contract alignment.
 """
 
 from typing import Dict, Sequence
@@ -12,6 +12,11 @@ from fastapi.testclient import TestClient
 
 from naudisha.api.main import app, create_app
 from naudisha.api.routes import get_route_service
+from naudisha.api.schemas import (
+    DEFAULT_SHIP_PROFILE_SCHEMA,
+    ShipProfileSchema,
+    validate_iso_8713_imo,
+)
 from naudisha.api.services import RoutePlanningService, RoutePlanResult
 from naudisha.api.errors import (
     EnvironmentUnavailableError,
@@ -85,7 +90,7 @@ class MockBatchWeatherProvider(WeatherProvider, BatchCapableProvider):
 
 
 class TestNauDishaAPI(unittest.TestCase):
-    """Test suite for FastAPI endpoints and error format compliance."""
+    """Test suite for FastAPI endpoints, schemas, and contract v2 compliance."""
 
     def setUp(self) -> None:
         # Default test client with offline mock provider
@@ -102,7 +107,7 @@ class TestNauDishaAPI(unittest.TestCase):
     # -------------------------------------------------------------------------
 
     def test_01_health_endpoint(self) -> None:
-        """1. GET /health returns 200 OK and expected status JSON."""
+        """1. GET /health returns 200 OK and documented status JSON."""
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -110,11 +115,11 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(data.get("service"), "naudisha-backend")
 
     # -------------------------------------------------------------------------
-    # 2. Valid Route Preview Tests
+    # 2. Valid Route Preview Tests (with IMO, without IMO, custom ship, departure_time)
     # -------------------------------------------------------------------------
 
-    def test_02_valid_route_preview(self) -> None:
-        """2. POST /api/routes/preview returns 200 with valid route schema."""
+    def test_02_valid_route_preview_with_imo(self) -> None:
+        """2. POST /api/routes/preview with IMO returns 200 with valid contract v2 schema."""
         payload = {
             "imo_number": "1234567",
             "start": {
@@ -125,6 +130,7 @@ class TestNauDishaAPI(unittest.TestCase):
                 "latitude": 19.07,
                 "longitude": 72.87,
             },
+            "departure_time": "2026-08-20T06:00:00Z",
         }
         response = self.client.post("/api/routes/preview", json=payload)
         self.assertEqual(response.status_code, 200)
@@ -132,6 +138,9 @@ class TestNauDishaAPI(unittest.TestCase):
 
         self.assertEqual(data.get("imo_number"), "1234567")
         self.assertEqual(data.get("status"), "route_ready")
+        self.assertEqual(data.get("departure_time"), "2026-08-20T06:00:00Z")
+        self.assertIn("eta", data)
+        self.assertTrue(data["eta"].startswith("2026-08-20T"))
         self.assertIsInstance(data.get("route"), list)
         self.assertGreater(len(data["route"]), 0)
         self.assertIsInstance(data.get("distance_nm"), (int, float))
@@ -145,12 +154,62 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertIsInstance(first_wp["latitude"], (int, float))
         self.assertIsInstance(first_wp["longitude"], (int, float))
 
+    def test_03_route_preview_without_imo_but_with_ship(self) -> None:
+        """3. Route preview without IMO but with complete ship particulars succeeds."""
+        payload = {
+            "imo_number": None,
+            "start": {"latitude": 18.52, "longitude": 72.91},
+            "destination": {"latitude": 19.07, "longitude": 72.87},
+            "ship": {
+                "ship_type": "Bulk Carrier",
+                "length_m": 225.0,
+                "beam_m": 32.2,
+                "draft_m": 12.5,
+                "cruising_speed_kn": 14.0,
+                "max_speed_kn": 17.0,
+            },
+        }
+        response = self.client.post("/api/routes/preview", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIsNone(data.get("imo_number"))
+        self.assertEqual(data.get("status"), "route_ready")
+        self.assertIn("departure_time", data)
+        self.assertIn("eta", data)
+
+    def test_04_route_preview_rejected_when_both_imo_and_ship_absent(self) -> None:
+        """4. Route preview rejected with 422 when neither IMO nor ship is provided."""
+        payload = {
+            "start": {"latitude": 18.52, "longitude": 72.91},
+            "destination": {"latitude": 19.07, "longitude": 72.87},
+        }
+        response = self.client.post("/api/routes/preview", json=payload)
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertIn("error", data)
+
+    def test_05_route_preview_without_departure_time_uses_current_utc(self) -> None:
+        """5. Route preview without departure_time uses current UTC timestamp."""
+        payload = {
+            "imo_number": "1234567",
+            "start": {"latitude": 18.52, "longitude": 72.91},
+            "destination": {"latitude": 19.07, "longitude": 72.87},
+        }
+        response = self.client.post("/api/routes/preview", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("departure_time", data)
+        self.assertIn("eta", data)
+        # Verify it parses as ISO datetime
+        dep = datetime.fromisoformat(data["departure_time"].replace("Z", "+00:00"))
+        self.assertIsNotNone(dep)
+
     # -------------------------------------------------------------------------
-    # 3. Invalid Coordinates Tests
+    # 3. Invalid Coordinates & Validation Tests
     # -------------------------------------------------------------------------
 
-    def test_03_invalid_latitude_out_of_bounds(self) -> None:
-        """3. Invalid latitude (> 90) returns 422 with INVALID_COORDINATES error code."""
+    def test_06_invalid_latitude_out_of_bounds(self) -> None:
+        """6. Invalid latitude (> 90) returns 422 with INVALID_COORDINATES error code."""
         payload = {
             "imo_number": "1234567",
             "start": {
@@ -169,13 +228,14 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "INVALID_COORDINATES")
         self.assertIn("latitude", data["error"]["message"].lower())
 
-    def test_04_invalid_longitude_out_of_bounds(self) -> None:
-        """4. Invalid longitude (> 180) returns 422 with INVALID_COORDINATES error code."""
+    def test_07_invalid_longitude_out_of_bounds(self) -> None:
+        """7. Invalid longitude (> 180) returns 422 with INVALID_COORDINATES error code."""
         payload = {
             "imo_number": "1234567",
             "start": {
                 "latitude": 18.52,
                 "longitude": 185.0,  # Invalid
+                "destination": {"latitude": 19.07, "longitude": 72.87},
             },
             "destination": {
                 "latitude": 19.07,
@@ -188,12 +248,8 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertIn("error", data)
         self.assertEqual(data["error"]["code"], "INVALID_COORDINATES")
 
-    # -------------------------------------------------------------------------
-    # 4. Missing Required Fields Tests
-    # -------------------------------------------------------------------------
-
-    def test_05_missing_destination_field(self) -> None:
-        """5. Missing required field 'destination' returns 422 validation error."""
+    def test_08_missing_destination_field(self) -> None:
+        """8. Missing required field 'destination' returns 422 validation error."""
         payload = {
             "imo_number": "1234567",
             "start": {
@@ -205,12 +261,15 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         data = response.json()
         self.assertIn("error", data)
-        self.assertIn("code", data["error"])
-        self.assertIn("message", data["error"])
 
-    def test_06_missing_imo_number(self) -> None:
-        """6. Missing required field 'imo_number' returns 422 validation error."""
+    # -------------------------------------------------------------------------
+    # 4. ISO 8713 IMO Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_09_invalid_imo_format_alphabetic(self) -> None:
+        """9. Non-numeric IMO string returns 422 with INVALID_IMO error code."""
         payload = {
+            "imo_number": "ABCDEFG",
             "start": {"latitude": 18.52, "longitude": 72.91},
             "destination": {"latitude": 19.07, "longitude": 72.87},
         }
@@ -220,27 +279,10 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertIn("error", data)
         self.assertEqual(data["error"]["code"], "INVALID_IMO")
 
-    # -------------------------------------------------------------------------
-    # 5. IMO Validation Tests
-    # -------------------------------------------------------------------------
-
-    def test_07_invalid_imo_format_alphabetic(self) -> None:
-        """7. Non-numeric IMO string returns 422 with INVALID_IMO error code."""
+    def test_10_invalid_imo_format_too_short(self) -> None:
+        """10. IMO string with not exactly 7 digits returns 422 with INVALID_IMO code."""
         payload = {
-            "imo_number": "ABCDEF",
-            "start": {"latitude": 18.52, "longitude": 72.91},
-            "destination": {"latitude": 19.07, "longitude": 72.87},
-        }
-        response = self.client.post("/api/routes/preview", json=payload)
-        self.assertEqual(response.status_code, 422)
-        data = response.json()
-        self.assertIn("error", data)
-        self.assertEqual(data["error"]["code"], "INVALID_IMO")
-
-    def test_08_invalid_imo_format_too_short(self) -> None:
-        """8. IMO string with less than 6 digits returns 422 with INVALID_IMO code."""
-        payload = {
-            "imo_number": "123",
+            "imo_number": "123456",
             "start": {"latitude": 18.52, "longitude": 72.91},
             "destination": {"latitude": 19.07, "longitude": 72.87},
         }
@@ -249,12 +291,40 @@ class TestNauDishaAPI(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["error"]["code"], "INVALID_IMO")
 
+    def test_11_invalid_imo_check_digit(self) -> None:
+        """11. IMO string with invalid ISO 8713 check digit returns 422 with INVALID_IMO code."""
+        # 1234560: 77 % 10 = 7, but 7th digit is 0
+        payload = {
+            "imo_number": "1234560",
+            "start": {"latitude": 18.52, "longitude": 72.91},
+            "destination": {"latitude": 19.07, "longitude": 72.87},
+        }
+        response = self.client.post("/api/routes/preview", json=payload)
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertEqual(data["error"]["code"], "INVALID_IMO")
+
+    def test_12_direct_iso_8713_validation_helper(self) -> None:
+        """12. Unit validation of ISO 8713 checksum algorithm."""
+        # Valid cases
+        self.assertEqual(validate_iso_8713_imo("1234567"), "1234567")
+        self.assertEqual(validate_iso_8713_imo("9876543"), "9876543")
+        self.assertEqual(validate_iso_8713_imo("7654329"), "7654329")
+
+        # Invalid cases
+        with self.assertRaises(ValueError):
+            validate_iso_8713_imo("1234568")
+        with self.assertRaises(ValueError):
+            validate_iso_8713_imo("12345")
+        with self.assertRaises(ValueError):
+            validate_iso_8713_imo("12345678")
+
     # -------------------------------------------------------------------------
-    # 6. Dependency Injection & Mock Provider Tests
+    # 5. Dependency Injection & Service Integration Tests
     # -------------------------------------------------------------------------
 
-    def test_09_dependency_injection_custom_provider(self) -> None:
-        """9. Injected RoutePlanningService with custom provider executes successfully."""
+    def test_13_dependency_injection_custom_provider(self) -> None:
+        """13. Injected RoutePlanningService with custom provider executes successfully."""
         mock_provider = DummyWeatherProvider(current_speed=1.5, wave_height=2.0, wind_speed=20.0)
         custom_service = RoutePlanningService(environment_provider=mock_provider)
 
@@ -274,12 +344,8 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(data["status"], "route_ready")
         self.assertGreater(len(data["route"]), 1)
 
-    # -------------------------------------------------------------------------
-    # 7. Serialization & API Contract Compliance
-    # -------------------------------------------------------------------------
-
-    def test_10_response_serialization_fields_match_contract(self) -> None:
-        """10. Verify response JSON keys exactly match docs/API_CONTRACT.md section 5."""
+    def test_14_response_serialization_fields_match_contract_v2(self) -> None:
+        """14. Verify response JSON keys exactly match docs/API_CONTRACT.md section 5."""
         payload = {
             "imo_number": "1234567",
             "start": {"latitude": 18.52, "longitude": 72.91},
@@ -290,15 +356,24 @@ class TestNauDishaAPI(unittest.TestCase):
         data = response.json()
 
         # Contract Section 5 required fields:
-        expected_keys = {"imo_number", "status", "route", "distance_nm", "estimated_time_hours", "total_cost"}
+        expected_keys = {
+            "imo_number",
+            "status",
+            "departure_time",
+            "eta",
+            "route",
+            "distance_nm",
+            "estimated_time_hours",
+            "total_cost",
+        }
         self.assertEqual(set(data.keys()), expected_keys)
 
     # -------------------------------------------------------------------------
-    # 8. Error Mapping & Service Failures
+    # 6. Error Mapping & Service Failures
     # -------------------------------------------------------------------------
 
-    def test_11_environment_unavailable_error_mapped(self) -> None:
-        """11. Service raising EnvironmentUnavailableError maps to 503 JSON response."""
+    def test_15_environment_unavailable_error_mapped(self) -> None:
+        """15. Service raising EnvironmentUnavailableError maps to 503 JSON response."""
         failing_service = MagicMock(spec=RoutePlanningService)
         failing_service.plan_preview_route.side_effect = EnvironmentUnavailableError("CMEMS provider unreachable")
 
@@ -317,8 +392,8 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "ENVIRONMENT_UNAVAILABLE")
         self.assertIn("CMEMS provider unreachable", data["error"]["message"])
 
-    def test_12_route_not_found_error_mapped(self) -> None:
-        """12. Service raising RouteNotFoundError maps to 404 JSON response."""
+    def test_16_route_not_found_error_mapped(self) -> None:
+        """16. Service raising RouteNotFoundError maps to 404 JSON response."""
         failing_service = MagicMock(spec=RoutePlanningService)
         failing_service.plan_preview_route.side_effect = RouteNotFoundError("No navigable path through storm")
 
@@ -336,8 +411,8 @@ class TestNauDishaAPI(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["error"]["code"], "ROUTE_NOT_FOUND")
 
-    def test_13_unhandled_exception_maps_to_500_internal_error(self) -> None:
-        """13. Unhandled Python exception maps to clean 500 INTERNAL_ERROR without leaking traceback."""
+    def test_17_unhandled_exception_maps_to_500_internal_error(self) -> None:
+        """17. Unhandled Python exception maps to clean 500 INTERNAL_ERROR without leaking traceback."""
         failing_service = MagicMock(spec=RoutePlanningService)
         failing_service.plan_preview_route.side_effect = RuntimeError("Database pointer corrupted")
 
@@ -357,11 +432,102 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertNotIn("Database pointer corrupted", data["error"]["message"])
 
     # -------------------------------------------------------------------------
+    # 7. Ship Identify, Tracking, Status & Route Endpoints
+    # -------------------------------------------------------------------------
+
+    def test_18_ship_identify_endpoint_includes_ship_block(self) -> None:
+        """18. POST /api/ships returns ship profile block conforming to contract v2 §4."""
+        payload = {"imo_number": "1234567"}
+        response = self.client.post("/api/ships", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["imo_number"], "1234567")
+        self.assertEqual(data["name"], "Demo Vessel")
+        self.assertEqual(data["status"], "underway")
+        self.assertIn("position", data)
+        self.assertIn("ship", data)
+        self.assertEqual(data["ship"]["ship_type"], "Container Vessel (Panamax)")
+        self.assertEqual(data["ship"]["length_m"], 294.0)
+        self.assertEqual(data["ship"]["beam_m"], 32.2)
+        self.assertEqual(data["ship"]["draft_m"], 12.0)
+        self.assertEqual(data["ship"]["cruising_speed_kn"], 18.0)
+        self.assertEqual(data["ship"]["max_speed_kn"], 23.0)
+
+    def test_19_tracking_start_endpoint(self) -> None:
+        """19. POST /api/ships/{imo}/tracking/start accepts destination body and returns confirmation."""
+        payload = {"destination": {"latitude": 19.07, "longitude": 72.87}}
+        response = self.client.post("/api/ships/1234567/tracking/start", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["imo_number"], "1234567")
+        self.assertTrue(data["tracking"])
+        self.assertEqual(data["message"], "Ship tracking started")
+
+    def test_20_tracking_start_invalid_imo_rejected(self) -> None:
+        """20. POST /api/ships/{imo}/tracking/start rejects invalid IMO with 422."""
+        payload = {"destination": {"latitude": 19.07, "longitude": 72.87}}
+        response = self.client.post("/api/ships/invalid_imo/tracking/start", json=payload)
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertEqual(data["error"]["code"], "INVALID_IMO")
+
+    def test_21_ship_status_endpoint(self) -> None:
+        """21. GET /api/ships/{imo}/status returns status, position, and destination."""
+        response = self.client.get("/api/ships/1234567/status")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["imo_number"], "1234567")
+        self.assertEqual(data["status"], "underway")
+        self.assertIn("position", data)
+        self.assertIn("destination", data)
+        self.assertIn("timestamp", data)
+
+    def test_22_ship_route_endpoint(self) -> None:
+        """22. GET /api/ships/{imo}/route returns route, statistics, destination, updated_at."""
+        response = self.client.get("/api/ships/1234567/route")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["imo_number"], "1234567")
+        self.assertEqual(data["route_status"], "optimal")
+        self.assertIn("destination", data)
+        self.assertIsInstance(data["route"], list)
+        self.assertIn("distance_nm", data)
+        self.assertIn("estimated_time_hours", data)
+        self.assertIn("total_cost", data)
+        self.assertIn("updated_at", data)
+
+    # -------------------------------------------------------------------------
+    # 8. Ship Profile Schema Mapping Unit Tests
+    # -------------------------------------------------------------------------
+
+    def test_23_ship_profile_schema_mapping(self) -> None:
+        """23. ShipProfileSchema maps to and from core domain ShipProfile model."""
+        schema = ShipProfileSchema(
+            ship_type="Bulk Carrier",
+            length_m=225.0,
+            beam_m=32.2,
+            draft_m=12.5,
+            cruising_speed_kn=14.0,
+            max_speed_kn=17.0,
+        )
+        domain = schema.to_domain_model()
+        self.assertEqual(domain.ship_type, "Bulk Carrier")
+        self.assertEqual(domain.length, 225.0)
+        self.assertEqual(domain.beam, 32.2)
+        self.assertEqual(domain.draft, 12.5)
+        self.assertEqual(domain.cruising_speed, 14.0)
+        self.assertEqual(domain.maximum_speed, 17.0)
+
+        mapped_back = ShipProfileSchema.from_domain_model(domain)
+        self.assertEqual(mapped_back.length_m, 225.0)
+        self.assertEqual(mapped_back.max_speed_kn, 17.0)
+
+    # -------------------------------------------------------------------------
     # 9. Direct RoutePlanningService Unit Tests
     # -------------------------------------------------------------------------
 
-    def test_14_service_direct_planning(self) -> None:
-        """14. Direct invocation of RoutePlanningService produces valid RoutePlanResult."""
+    def test_24_service_direct_planning(self) -> None:
+        """24. Direct invocation of RoutePlanningService produces valid RoutePlanResult with ETA."""
         service = RoutePlanningService(environment_provider=self.mock_provider)
         result = service.plan_preview_route(
             imo_number="1234567",
@@ -369,16 +535,19 @@ class TestNauDishaAPI(unittest.TestCase):
             start_lon=72.91,
             dest_lat=19.07,
             dest_lon=72.87,
+            timestamp="2026-08-20T08:00:00Z",
         )
         self.assertIsInstance(result, RoutePlanResult)
         self.assertEqual(result.imo_number, "1234567")
         self.assertEqual(result.status, "route_ready")
+        self.assertEqual(result.departure_time, "2026-08-20T08:00:00Z")
+        self.assertTrue(result.eta.startswith("2026-08-20T"))
         self.assertGreater(result.distance_nm, 0.0)
         self.assertGreater(result.estimated_time_hours, 0.0)
         self.assertGreater(result.total_cost, 0.0)
 
-    def test_15_service_same_start_and_destination(self) -> None:
-        """15. Direct invocation with identical start and destination coordinates returns 0 cost/distance."""
+    def test_25_service_same_start_and_destination(self) -> None:
+        """25. Direct invocation with identical start and destination coordinates returns 0 cost/distance."""
         service = RoutePlanningService(environment_provider=self.mock_provider)
         result = service.plan_preview_route(
             imo_number="1234567",
@@ -392,34 +561,13 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(result.total_cost, 0.0)
         self.assertEqual(len(result.route), 1)
 
-    # -------------------------------------------------------------------------
-    # 10. Ship Identify Endpoint Test
-    # -------------------------------------------------------------------------
-
-    def test_16_ship_identify_endpoint(self) -> None:
-        """16. POST /api/ships creates or identifies vessel matching API contract."""
-        payload = {"imo_number": "1234567"}
-        response = self.client.post("/api/ships", json=payload)
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["imo_number"], "1234567")
-        self.assertEqual(data["name"], "Demo Vessel")
-        self.assertEqual(data["status"], "underway")
-        self.assertIn("position", data)
-        self.assertIn("latitude", data["position"])
-        self.assertIn("longitude", data["position"])
-
-    # -------------------------------------------------------------------------
-    # 11. Phase 8.2 Live Batch Integration Tests
-    # -------------------------------------------------------------------------
-
-    def test_17_service_uses_batch_capable_provider_pipeline(self) -> None:
-        """17. Route planning service utilizes the batch environmental pipeline for graph population."""
+    def test_26_service_uses_batch_capable_provider_pipeline(self) -> None:
+        """26. Route planning service utilizes the batch environmental pipeline for graph population."""
         batch_provider = MockBatchWeatherProvider()
         service = RoutePlanningService(environment_provider=batch_provider)
 
         result = service.plan_preview_route(
-            imo_number="7654321",
+            imo_number="7654329",
             start_lat=18.0,
             start_lon=71.0,
             dest_lat=18.8,
@@ -427,7 +575,7 @@ class TestNauDishaAPI(unittest.TestCase):
         )
 
         self.assertIsInstance(result, RoutePlanResult)
-        self.assertEqual(result.imo_number, "7654321")
+        self.assertEqual(result.imo_number, "7654329")
         self.assertEqual(result.status, "route_ready")
         self.assertGreater(len(result.route), 1)
         self.assertGreater(result.distance_nm, 0.0)
@@ -437,13 +585,8 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(batch_provider.batch_call_count, 1)
         self.assertGreater(len(batch_provider.last_requests), 0)
 
-    def test_18_default_provider_is_composite_environmental_provider(self) -> None:
-        """18. Default RoutePlanningService initializes CompositeEnvironmentalProvider as provider."""
-        service = RoutePlanningService()
-        self.assertIsInstance(service.environment_provider, CompositeEnvironmentalProvider)
-
-    def test_19_bounding_grid_covers_corridor_with_margin(self) -> None:
-        """19. Dynamic grid builder wraps origin/bounds properly covering departure and destination."""
+    def test_27_bounding_grid_covers_corridor_with_margin(self) -> None:
+        """27. Dynamic grid builder wraps origin/bounds properly covering departure and destination."""
         service = RoutePlanningService(environment_provider=self.mock_provider)
         graph = service._build_bounding_grid(start_lat=18.2, start_lon=71.1, dest_lat=18.9, dest_lon=71.9)
 

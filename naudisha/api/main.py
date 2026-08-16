@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from naudisha.api.errors import register_exception_handlers
-from naudisha.api.routes import api_router, health_router
+from naudisha.api.routes import api_router, health_router, ws_router
 
 
 def create_app() -> FastAPI:
@@ -21,7 +21,7 @@ def create_app() -> FastAPI:
             "REST API backend for NauDisha marine route optimization and vessel tracking. "
             "Integrates multi-factor environmental cost modeling and D* Lite dynamic replanning."
         ),
-        version="0.1.0",
+        version="0.2.0",
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     # 3. Include Routers
     application.include_router(health_router)
     application.include_router(api_router)
+    application.include_router(ws_router)
 
     return application
 
