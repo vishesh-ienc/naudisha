@@ -1,6 +1,6 @@
 """
 Vessel Data Providers and Real Maritime Registry Integration for NauDisha.
-Provides clean abstraction for querying vessel master particulars and live AIS data
+Provides clean abstraction for querying real vessel master particulars and live AIS data
 by IMO number, with caching, live Wikidata SPARQL lookup, and AISStream live tracking.
 """
 
@@ -9,13 +9,33 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 
 logger = logging.getLogger("naudisha.data.vessel")
+
+
+# =============================================================================
+# Domain Records & Data Models
+# =============================================================================
+
+@dataclass(frozen=True)
+class AISDataRecord:
+    """Live dynamic AIS position and navigational status report."""
+    mmsi: Optional[str]
+    imo_number: Optional[str]
+    latitude: float
+    longitude: float
+    speed_kn: Optional[float] = None
+    course_deg: Optional[float] = None
+    heading_deg: Optional[float] = None
+    nav_status: str = "underway"  # "underway", "stopped", "at_anchor", "moored", "unknown"
+    timestamp_utc: Optional[str] = None
+    source: str = "aisstream"  # "aisstream", "digitraffic", "mock"
 
 
 @dataclass(frozen=True)
@@ -29,22 +49,39 @@ class VesselRecord:
     draft_m: float
     cruising_speed_kn: float
     max_speed_kn: float
-    status: str = "underway"  # "underway", "stopped", "unknown"
+    status: str = "unknown"  # "underway", "stopped", "at_anchor", "unknown"
     position_lat: Optional[float] = None
     position_lon: Optional[float] = None
     last_updated: Optional[str] = None
-    source: str = "registry"  # "aisstream", "wikidata", "registry", "synthetic", "mock"
+    mmsi: Optional[str] = None
+    source: str = "registry"  # "wikidata", "registry", "aisstream", "synthetic", "mock"
+    is_live_position: bool = False
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Curated Maritime Registry Catalog (Real Global Commercial Vessels)
 # Verified from public maritime registers (Clarkson's, Equasis, IMO records)
-# -----------------------------------------------------------------------------
+# =============================================================================
 
 GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
-    # Vehicle Carrier / Ro-Ro
+    # General Cargo Vessel (Correct mapping for IMO 9176187)
     "9176187": VesselRecord(
         imo_number="9176187",
+        name="Shinsung Dream",
+        ship_type="General Cargo Vessel",
+        length_m=106.0,
+        beam_m=18.0,
+        draft_m=7.0,
+        cruising_speed_kn=12.5,
+        max_speed_kn=14.0,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
+        source="registry",
+    ),
+    # Vehicle Carrier / Pure Car and Truck Carrier (Real IMO for Courage)
+    "8916968": VesselRecord(
+        imo_number="8916968",
         name="Courage",
         ship_type="Vehicles Carrier",
         length_m=199.9,
@@ -52,9 +89,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=8.8,
         cruising_speed_kn=18.0,
         max_speed_kn=20.5,
-        status="underway",
-        position_lat=18.52,
-        position_lon=72.91,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     # Ultra Large Container Vessels (ULCV)
@@ -67,9 +104,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=14.5,
         cruising_speed_kn=19.5,
         max_speed_kn=22.8,
-        status="underway",
-        position_lat=19.07,
-        position_lon=72.87,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     "9321483": VesselRecord(
@@ -81,9 +118,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=15.5,
         cruising_speed_kn=21.0,
         max_speed_kn=25.5,
-        status="underway",
-        position_lat=18.95,
-        position_lon=72.82,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     "9703291": VesselRecord(
@@ -95,9 +132,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=16.0,
         cruising_speed_kn=20.0,
         max_speed_kn=22.8,
-        status="underway",
-        position_lat=18.90,
-        position_lon=72.80,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     "9499890": VesselRecord(
@@ -109,9 +146,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=16.0,
         cruising_speed_kn=19.0,
         max_speed_kn=23.0,
-        status="underway",
-        position_lat=18.70,
-        position_lon=72.85,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     # Very Large Ore Carrier (VLOC) / Bulk Carriers
@@ -124,9 +161,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=23.0,
         cruising_speed_kn=14.0,
         max_speed_kn=15.5,
-        status="underway",
-        position_lat=18.60,
-        position_lon=72.90,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     "9617246": VesselRecord(
@@ -138,9 +175,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=14.5,
         cruising_speed_kn=14.2,
         max_speed_kn=15.0,
-        status="underway",
-        position_lat=18.55,
-        position_lon=72.92,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     # Crude Oil Tankers
@@ -153,9 +190,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=15.0,
         cruising_speed_kn=14.5,
         max_speed_kn=15.5,
-        status="underway",
-        position_lat=18.52,
-        position_lon=72.91,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     "9235268": VesselRecord(
@@ -167,9 +204,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=24.5,
         cruising_speed_kn=15.0,
         max_speed_kn=16.5,
-        status="underway",
-        position_lat=18.50,
-        position_lon=72.75,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     "9745902": VesselRecord(
@@ -181,9 +218,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=14.8,
         cruising_speed_kn=14.5,
         max_speed_kn=15.5,
-        status="underway",
-        position_lat=18.65,
-        position_lon=72.88,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     # LNG Carriers
@@ -196,9 +233,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=12.0,
         cruising_speed_kn=19.5,
         max_speed_kn=21.0,
-        status="underway",
-        position_lat=18.80,
-        position_lon=72.85,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     # General Cargo / Heavy Lift
@@ -211,9 +248,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         draft_m=7.8,
         cruising_speed_kn=13.5,
         max_speed_kn=15.0,
-        status="underway",
-        position_lat=18.52,
-        position_lon=72.91,
+        status="unknown",
+        position_lat=None,
+        position_lon=None,
         source="registry",
     ),
     # Panamax Demo Test Fixture
@@ -234,9 +271,9 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
 }
 
 
-# -----------------------------------------------------------------------------
-# Provider Interfaces & Implementations
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Provider Interfaces
+# =============================================================================
 
 class VesselProvider(ABC):
     """Abstract base class for vessel particulars and AIS data providers."""
@@ -255,6 +292,57 @@ class VesselProvider(ABC):
         pass
 
 
+class AISProvider(ABC):
+    """Abstract base class for live satellite / terrestrial AIS data providers."""
+
+    @abstractmethod
+    def get_live_position(self, imo_number: str) -> Optional[AISDataRecord]:
+        """
+        Retrieves latest real-time AIS position report for an IMO or MMSI.
+
+        Returns:
+            AISDataRecord if an active transponder signal exists, None otherwise.
+        """
+        pass
+
+
+# =============================================================================
+# Live AIS Manager & Providers
+# =============================================================================
+
+class LiveAISManager(AISProvider):
+    """
+    In-memory live AIS store with staleness eviction.
+    Ingests live AIS messages and maps them to IMO/MMSI.
+    """
+
+    def __init__(self, stale_threshold_seconds: float = 86400.0) -> None:
+        self.stale_threshold_seconds = stale_threshold_seconds
+        self._positions: Dict[str, Tuple[AISDataRecord, float]] = {}
+
+    def record_ais_update(self, record: AISDataRecord) -> None:
+        """Stores a freshly received live AIS transponder update."""
+        now = time.time()
+        if record.imo_number:
+            self._positions[record.imo_number] = (record, now)
+        if record.mmsi:
+            self._positions[record.mmsi] = (record, now)
+
+    def get_live_position(self, imo_number: str) -> Optional[AISDataRecord]:
+        """Retrieves live position if within staleness threshold."""
+        if imo_number not in self._positions:
+            return None
+        record, received_at = self._positions[imo_number]
+        if (time.time() - received_at) > self.stale_threshold_seconds:
+            # Stale position exceeds threshold -> treat as unavailable
+            return None
+        return record
+
+
+# =============================================================================
+# Concrete Vessel Particulars Providers
+# =============================================================================
+
 class RegistryVesselProvider(VesselProvider):
     """Authoritative maritime registry lookup provider."""
 
@@ -270,12 +358,13 @@ class WikidataVesselProvider(VesselProvider):
 
     def get_vessel_by_imo(self, imo_number: str) -> Optional[VesselRecord]:
         sparql = f"""
-        SELECT ?ship ?shipLabel ?typeLabel ?loa ?beam ?draft WHERE {{
+        SELECT ?ship ?shipLabel ?typeLabel ?loa ?beam ?draft ?mmsi WHERE {{
           ?ship wdt:P458 "{imo_number}".
           OPTIONAL {{ ?ship wdt:P31 ?type. }}
           OPTIONAL {{ ?ship wdt:P2043 ?loa. }}
           OPTIONAL {{ ?ship wdt:P2261 ?beam. }}
           OPTIONAL {{ ?ship wdt:P2262 ?draft. }}
+          OPTIONAL {{ ?ship wdt:P587 ?mmsi. }}
           SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
         }}
         LIMIT 1
@@ -286,7 +375,7 @@ class WikidataVesselProvider(VesselProvider):
             headers={"User-Agent": "NauDisha-Maritime-API/1.0 (https://github.com/vishesh-ienc/naudisha)"}
         )
         try:
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            with urllib.request.urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 bindings = data.get("results", {}).get("bindings", [])
                 if not bindings:
@@ -299,6 +388,7 @@ class WikidataVesselProvider(VesselProvider):
                 loa_val = b.get("loa", {}).get("value")
                 beam_val = b.get("beam", {}).get("value")
                 draft_val = b.get("draft", {}).get("value")
+                mmsi_val = b.get("mmsi", {}).get("value")
 
                 loa = float(loa_val) if loa_val else 220.0
                 beam = float(beam_val) if beam_val else round(loa / 6.5, 1)
@@ -313,9 +403,10 @@ class WikidataVesselProvider(VesselProvider):
                     draft_m=round(draft, 1),
                     cruising_speed_kn=15.0,
                     max_speed_kn=18.0,
-                    status="underway",
-                    position_lat=None,  # Real AIS position required; honest null when static
+                    status="unknown",
+                    position_lat=None,
                     position_lon=None,
+                    mmsi=mmsi_val,
                     source="wikidata",
                 )
         except Exception as exc:
@@ -327,7 +418,7 @@ class SyntheticVesselProvider(VesselProvider):
     """
     Deterministic naval architecture synthesizer for uncataloged valid IMO numbers.
     Ensures every valid 7-digit IMO number resolves to realistic commercial particulars.
-    Returns position=None when no live AIS satellite transponder data is connected.
+    Never fabricates live AIS GPS coordinates.
     """
 
     SHIP_TYPES = [
@@ -359,21 +450,26 @@ class SyntheticVesselProvider(VesselProvider):
             draft_m=max(4.0, draft_var),
             cruising_speed_kn=cruise,
             max_speed_kn=max_sp,
-            status="underway",
-            position_lat=None,  # No live AIS connected for uncataloged vessels
+            status="unknown",
+            position_lat=None,
             position_lon=None,
             source="synthetic",
         )
 
 
+# =============================================================================
+# Composite Orchestrator
+# =============================================================================
+
 class CompositeVesselProvider(VesselProvider):
     """
     Universal composite vessel provider managing:
-    1. In-memory query cache
-    2. Primary injected mock / AIS provider (if any)
+    1. In-memory particulars cache (TTL: 7 days)
+    2. Primary injected mock provider (for testing)
     3. Curated authoritative maritime registry
     4. Live online Wikidata SPARQL lookup
-    5. Naval architecture synthesizer for uncataloged valid IMOs
+    5. Live AIS Manager for real-time satellite GPS
+    6. Naval architecture synthesizer fallback
     """
 
     def __init__(
@@ -382,52 +478,78 @@ class CompositeVesselProvider(VesselProvider):
         online_provider: Optional[VesselProvider] = None,
         synthetic_provider: Optional[VesselProvider] = None,
         primary_provider: Optional[VesselProvider] = None,
+        ais_manager: Optional[LiveAISManager] = None,
+        particulars_cache_ttl: float = 604800.0,  # 7 days
     ) -> None:
         self.primary_provider = primary_provider
         self.registry_provider = registry_provider or RegistryVesselProvider()
         self.online_provider = online_provider or WikidataVesselProvider()
         self.synthetic_provider = synthetic_provider or SyntheticVesselProvider()
-        self._cache: Dict[str, VesselRecord] = {}
+        self.ais_manager = ais_manager or LiveAISManager()
+        self.particulars_cache_ttl = particulars_cache_ttl
+        self._cache: Dict[str, Tuple[VesselRecord, float]] = {}
 
     def get_vessel_by_imo(self, imo_number: str) -> Optional[VesselRecord]:
+        now = time.time()
+
         # 1. Check in-memory query cache
-        if imo_number in self._cache:
-            return self._cache[imo_number]
+        cached_entry = self._cache.get(imo_number)
+        base_record: Optional[VesselRecord] = None
+        if cached_entry:
+            rec, cached_at = cached_entry
+            if (now - cached_at) < self.particulars_cache_ttl:
+                base_record = rec
 
         # 2. Check primary injected provider (if any)
-        if self.primary_provider is not None:
+        if base_record is None and self.primary_provider is not None:
             try:
-                record = self.primary_provider.get_vessel_by_imo(imo_number)
-                if record is not None:
-                    self._cache[imo_number] = record
-                    return record
+                base_record = self.primary_provider.get_vessel_by_imo(imo_number)
             except Exception as exc:
                 logger.debug("Primary provider error for IMO %s: %s", imo_number, exc)
 
         # 3. Check curated authoritative maritime registry
-        record = self.registry_provider.get_vessel_by_imo(imo_number)
-        if record is not None:
-            self._cache[imo_number] = record
-            return record
+        if base_record is None:
+            base_record = self.registry_provider.get_vessel_by_imo(imo_number)
 
         # 4. Query live open online database (Wikidata SPARQL)
-        if self.online_provider is not None:
+        if base_record is None and self.online_provider is not None:
             try:
-                record = self.online_provider.get_vessel_by_imo(imo_number)
-                if record is not None:
-                    self._cache[imo_number] = record
-                    return record
+                base_record = self.online_provider.get_vessel_by_imo(imo_number)
             except Exception as exc:
                 logger.debug("Online provider failed for IMO %s: %s", imo_number, exc)
 
         # 5. Synthesize realistic naval architecture particulars for valid IMO
-        if self.synthetic_provider is not None:
-            record = self.synthetic_provider.get_vessel_by_imo(imo_number)
-            if record is not None:
-                self._cache[imo_number] = record
-                return record
+        if base_record is None and self.synthetic_provider is not None:
+            base_record = self.synthetic_provider.get_vessel_by_imo(imo_number)
 
-        return None
+        if base_record is None:
+            return None
+
+        # Cache the base static particulars
+        self._cache[imo_number] = (base_record, now)
+
+        # 6. Check for live real-time AIS position report
+        live_ais = self.ais_manager.get_live_position(imo_number)
+        if live_ais is not None:
+            return VesselRecord(
+                imo_number=base_record.imo_number,
+                name=base_record.name,
+                ship_type=base_record.ship_type,
+                length_m=base_record.length_m,
+                beam_m=base_record.beam_m,
+                draft_m=base_record.draft_m,
+                cruising_speed_kn=base_record.cruising_speed_kn,
+                max_speed_kn=base_record.max_speed_kn,
+                status=live_ais.nav_status,
+                position_lat=live_ais.latitude,
+                position_lon=live_ais.longitude,
+                last_updated=live_ais.timestamp_utc,
+                mmsi=live_ais.mmsi or base_record.mmsi,
+                source=live_ais.source,
+                is_live_position=True,
+            )
+
+        return base_record
 
 
 class MockVesselProvider(VesselProvider):

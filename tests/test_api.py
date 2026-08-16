@@ -455,8 +455,17 @@ class TestNauDishaAPI(unittest.TestCase):
 
     def test_18b_ship_identify_real_vessels(self) -> None:
         """18b. POST /api/ships returns real vessel records for real IMO numbers."""
-        # Test Courage (Vehicle Carrier)
-        res_courage = self.client.post("/api/ships", json={"imo_number": "9176187"})
+        # Test Shinsung Dream (General Cargo Vessel - Real IMO 9176187)
+        res_shinsung = self.client.post("/api/ships", json={"imo_number": "9176187"})
+        self.assertEqual(res_shinsung.status_code, 200)
+        data_shinsung = res_shinsung.json()
+        self.assertEqual(data_shinsung["name"], "Shinsung Dream")
+        self.assertEqual(data_shinsung["ship"]["ship_type"], "General Cargo Vessel")
+        self.assertEqual(data_shinsung["ship"]["length_m"], 106.0)
+        self.assertEqual(data_shinsung["ship"]["draft_m"], 7.0)
+
+        # Test Courage (Vehicles Carrier - Real IMO 8916968)
+        res_courage = self.client.post("/api/ships", json={"imo_number": "8916968"})
         self.assertEqual(res_courage.status_code, 200)
         data_courage = res_courage.json()
         self.assertEqual(data_courage["name"], "Courage")
@@ -464,7 +473,7 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(data_courage["ship"]["length_m"], 199.9)
         self.assertEqual(data_courage["ship"]["draft_m"], 8.8)
 
-        # Test Ever Given (Container Ship)
+        # Test Ever Given (Container Ship - Real IMO 9811000)
         res_eg = self.client.post("/api/ships", json={"imo_number": "9811000"})
         self.assertEqual(res_eg.status_code, 200)
         data_eg = res_eg.json()
