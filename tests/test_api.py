@@ -472,13 +472,26 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(data_eg["ship"]["length_m"], 399.9)
         self.assertEqual(data_eg["ship"]["beam_m"], 58.8)
 
-    def test_18c_ship_identify_unknown_vessel_returns_404(self) -> None:
-        """18c. POST /api/ships returns 404 SHIP_NOT_FOUND when IMO is not in provider records."""
-        # Valid ISO 8713 IMO but not in registry
-        res_unknown = self.client.post("/api/ships", json={"imo_number": "9074729"})
-        self.assertEqual(res_unknown.status_code, 404)
-        data = res_unknown.json()
-        self.assertEqual(data["error"]["code"], "SHIP_NOT_FOUND")
+    def test_18c_ship_identify_universal_resolution_and_404_mock(self) -> None:
+        """18c. POST /api/ships dynamically resolves uncataloged valid IMOs, and returns 404 if provider returns None."""
+        # 1. Universal resolution for valid IMO
+        res_universal = self.client.post("/api/ships", json={"imo_number": "9074729"})
+        self.assertEqual(res_universal.status_code, 200)
+        data = res_universal.json()
+        self.assertEqual(data["imo_number"], "9074729")
+        self.assertIn("ship", data)
+
+        # 2. Injected mock provider returning None triggers 404 SHIP_NOT_FOUND
+        from naudisha.api.routes import get_vessel_provider
+        from naudisha.data.vessel_provider import MockVesselProvider
+        empty_mock = MockVesselProvider()
+        self.client.app.dependency_overrides[get_vessel_provider] = lambda: empty_mock
+        try:
+            res_404 = self.client.post("/api/ships", json={"imo_number": "9074729"})
+            self.assertEqual(res_404.status_code, 404)
+            self.assertEqual(res_404.json()["error"]["code"], "SHIP_NOT_FOUND")
+        finally:
+            self.client.app.dependency_overrides.pop(get_vessel_provider, None)
 
     def test_19_tracking_start_endpoint(self) -> None:
         """19. POST /api/ships/{imo}/tracking/start accepts destination body and returns confirmation."""
