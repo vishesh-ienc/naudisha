@@ -13,9 +13,43 @@ import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger("naudisha.data.vessel")
+
+
+# Major Navigable Global Maritime Corridors (lat_min, lat_max, lon_min, lon_max)
+MARITIME_CORRIDORS: list[Tuple[float, float, float, float]] = [
+    (14.0, 19.5, 68.5, 73.2),   # Arabian Sea / Mumbai Shipping Lane
+    (10.5, 17.5, 82.0, 90.0),   # Bay of Bengal Shipping Lane
+    (1.1, 4.5, 100.2, 104.8),   # Malacca / Singapore Strait
+    (13.0, 24.0, 36.5, 43.5),   # Red Sea / Bab-el-Mandeb
+    (24.5, 29.0, 49.5, 56.5),   # Persian Gulf / Strait of Hormuz
+    (33.0, 37.5, 12.0, 28.0),   # Mediterranean Sea Lane
+    (50.0, 56.0, -1.5, 6.5),    # English Channel / North Sea
+]
+
+
+def derive_imo_position(imo_number: str) -> Tuple[float, float]:
+    """
+    Deterministically derives realistic navigable maritime coordinates for any IMO.
+    Ensures every vessel has unique, consistent coordinates across major sea lanes.
+    """
+    digits = [int(d) for d in imo_number if d.isdigit()]
+    if len(digits) < 7:
+        return 18.52, 72.91
+
+    # Select corridor based on sum of first 3 digits
+    corridor_seed = sum(digits[:3])
+    lat_min, lat_max, lon_min, lon_max = MARITIME_CORRIDORS[corridor_seed % len(MARITIME_CORRIDORS)]
+
+    # Generate unique sub-offset using all digits
+    val_a = ((digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3]) % 10000) / 10000.0
+    val_b = ((digits[3] * 1000 + digits[4] * 100 + digits[5] * 10 + digits[6]) % 10000) / 10000.0
+
+    lat = round(lat_min + val_a * (lat_max - lat_min), 4)
+    lon = round(lon_min + val_b * (lon_max - lon_min), 4)
+    return lat, lon
 
 
 @dataclass(frozen=True)
@@ -304,6 +338,8 @@ class WikidataVesselProvider(VesselProvider):
                 beam = float(beam_val) if beam_val else round(loa / 6.5, 1)
                 draft = float(draft_val) if draft_val else round(beam / 2.6, 1)
 
+                lat, lon = derive_imo_position(imo_number)
+
                 return VesselRecord(
                     imo_number=imo_number,
                     name=name,
@@ -314,8 +350,8 @@ class WikidataVesselProvider(VesselProvider):
                     cruising_speed_kn=15.0,
                     max_speed_kn=18.0,
                     status="underway",
-                    position_lat=18.52,
-                    position_lon=72.91,
+                    position_lat=lat,
+                    position_lon=lon,
                     source="wikidata",
                 )
         except Exception as exc:
@@ -326,7 +362,8 @@ class WikidataVesselProvider(VesselProvider):
 class SyntheticVesselProvider(VesselProvider):
     """
     Deterministic naval architecture synthesizer for uncataloged valid IMO numbers.
-    Ensures every valid 7-digit IMO number resolves to realistic commercial particulars.
+    Ensures every valid 7-digit IMO number resolves to realistic commercial particulars
+    and distinct navigable coordinates across global shipping lanes.
     """
 
     SHIP_TYPES = [
@@ -349,6 +386,8 @@ class SyntheticVesselProvider(VesselProvider):
         beam_var = round(beam + (seed % 6) - 3, 1)
         draft_var = round(draft + ((seed % 20) / 10.0) - 1.0, 1)
 
+        lat, lon = derive_imo_position(imo_number)
+
         return VesselRecord(
             imo_number=imo_number,
             name=f"Vessel IMO-{imo_number}",
@@ -359,8 +398,8 @@ class SyntheticVesselProvider(VesselProvider):
             cruising_speed_kn=cruise,
             max_speed_kn=max_sp,
             status="underway",
-            position_lat=18.52,
-            position_lon=72.91,
+            position_lat=lat,
+            position_lon=lon,
             source="synthetic",
         )
 
@@ -369,9 +408,10 @@ class CompositeVesselProvider(VesselProvider):
     """
     Universal composite vessel provider managing:
     1. In-memory query cache
-    2. Curated authoritative maritime registry
-    3. Live online Wikidata SPARQL lookup
-    4. Naval architecture synthesizer for uncataloged valid IMOs
+    2. Primary injected mock provider (if any)
+    3. Curated authoritative maritime registry
+    4. Live online Wikidata SPARQL lookup
+    5. Naval architecture synthesizer for uncataloged valid IMOs
     """
 
     def __init__(
@@ -402,13 +442,13 @@ class CompositeVesselProvider(VesselProvider):
             except Exception as exc:
                 logger.debug("Primary provider error for IMO %s: %s", imo_number, exc)
 
-        # 2. Check curated authoritative maritime registry
+        # 3. Check curated authoritative maritime registry
         record = self.registry_provider.get_vessel_by_imo(imo_number)
         if record is not None:
             self._cache[imo_number] = record
             return record
 
-        # 3. Query live open online database (Wikidata SPARQL)
+        # 4. Query live open online database (Wikidata SPARQL)
         if self.online_provider is not None:
             try:
                 record = self.online_provider.get_vessel_by_imo(imo_number)
@@ -418,7 +458,7 @@ class CompositeVesselProvider(VesselProvider):
             except Exception as exc:
                 logger.debug("Online provider failed for IMO %s: %s", imo_number, exc)
 
-        # 4. Synthesize realistic naval architecture particulars for valid IMO
+        # 5. Synthesize realistic naval architecture particulars for valid IMO
         if self.synthetic_provider is not None:
             record = self.synthetic_provider.get_vessel_by_imo(imo_number)
             if record is not None:
