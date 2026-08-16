@@ -141,6 +141,20 @@ GLOBAL_VESSEL_REGISTRY: Dict[str, VesselRecord] = {
         source="registry",
     ),
     # Crude Oil Tankers
+    "9400980": VesselRecord(
+        imo_number="9400980",
+        name="EVALI",
+        ship_type="Crude Oil Tanker (Aframax / LR2)",
+        length_m=228.6,
+        beam_m=42.0,
+        draft_m=15.0,
+        cruising_speed_kn=14.5,
+        max_speed_kn=15.5,
+        status="underway",
+        position_lat=18.52,
+        position_lon=72.91,
+        source="registry",
+    ),
     "9235268": VesselRecord(
         imo_number="9235268",
         name="TI Europe",
