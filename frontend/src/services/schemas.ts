@@ -65,11 +65,19 @@ export const shipResponseSchema = z.object({
   imo_number: z.string(),
   name: z.string(),
   status: shipStatusSchema,
-  position: coordinateSchema,
-  // ADDENDUM — optional, absence is normal against a v1 backend.
+  // Nullable: the backend returns null when no live AIS fix exists, which is
+  // the normal case without an AISSTREAM_API_KEY. Requiring a Coordinate here
+  // failed validation on every real vessel and silently forced a mock fallback.
+  position: coordinateSchema.nullable(),
   ship: shipParticularsSchema.optional(),
   source: z.enum(['registry', 'ais', 'defaults', 'user_provided']).optional(),
   missing_fields: z.array(z.string()).optional(),
+})
+
+export const trackingStopResponseSchema = z.object({
+  imo_number: z.string(),
+  tracking: z.boolean(),
+  message: z.string(),
 })
 
 // ---------------------------------------------------------------------------

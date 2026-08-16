@@ -59,12 +59,16 @@ export interface ShipResponse {
   imo_number: ImoNumber
   name: string
   status: ShipStatus
-  position: Coordinate
-  /** ADDENDUM P0-2 */
+  /**
+   * Null when no live AIS report is available for the vessel — the common case
+   * without an AISSTREAM_API_KEY on the backend. Callers must handle it, not
+   * assume a position exists.
+   */
+  position: Coordinate | null
   ship?: ShipParticulars
-  /** ADDENDUM P0-2 */
+  /** Not currently sent by the backend; retained as an optional hint. */
   source?: ShipParticularsSource
-  /** ADDENDUM P0-2 — drives the manual-entry form. */
+  /** Not currently sent by the backend; the API always returns all six fields. */
   missing_fields?: string[]
 }
 
@@ -130,11 +134,19 @@ export interface RoutePreviewResponse {
 // §6 Tracking
 // ---------------------------------------------------------------------------
 
-/** ADDENDUM P1-3 — all fields optional; an empty body keeps v1 behaviour. */
+/** Contract §6. `destination` is required; the rest are optional. */
 export interface TrackingStartRequest {
-  destination?: Coordinate
+  destination: Coordinate
+  /** Falls back to the vessel's AIS position, then a backend default. */
+  origin?: Coordinate
   departure_time?: IsoTimestamp
-  ship?: Partial<ShipParticulars>
+}
+
+/** Contract §6.1. */
+export interface TrackingStopResponse {
+  imo_number: ImoNumber
+  tracking: boolean
+  message: string
 }
 
 export interface TrackingStartResponse {

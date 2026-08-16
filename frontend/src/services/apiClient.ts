@@ -18,6 +18,7 @@ import {
   shipResponseSchema,
   shipStatusResponseSchema,
   trackingStartResponseSchema,
+  trackingStopResponseSchema,
 } from './schemas'
 import type {
   CurrentRouteResponse,
@@ -28,6 +29,7 @@ import type {
   ShipStatusResponse,
   TrackingStartRequest,
   TrackingStartResponse,
+  TrackingStopResponse,
 } from '@/types/api'
 
 /** Relative paths — the Vite dev proxy forwards these to the backend origin. */
@@ -36,6 +38,7 @@ export const ENDPOINTS = {
   ships: '/api/ships',
   routePreview: '/api/routes/preview',
   trackingStart: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/tracking/start`,
+  trackingStop: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/tracking/stop`,
   shipStatus: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/status`,
   shipRoute: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/route`,
   liveSocket: (imo: string) => `/ws/ships/${encodeURIComponent(imo)}`,
@@ -77,15 +80,20 @@ export function previewRoute(
   return request(ENDPOINTS.routePreview, routePreviewResponseSchema, {
     method: 'POST',
     body,
-    timeoutMs: 20000, // Route computation may fetch live environmental data.
+    // A cold preview samples live Copernicus Marine data for the corridor and
+    // has been measured at ~2 minutes; the same corridor and hour then returns
+    // from cache in under a second. A shorter timeout would make every first
+    // request of a session fall back to placeholder data.
+    timeoutMs: 180_000,
+    retries: 0,
     ...opts,
   })
 }
 
-/** Contract §6. NOT YET IMPLEMENTED on the backend. */
+/** Contract §6. */
 export function startTracking(
   imoNumber: string,
-  payload: TrackingStartRequest = {},
+  payload: TrackingStartRequest,
   opts?: RequestOptions,
 ): Promise<TrackingStartResponse> {
   return request(ENDPOINTS.trackingStart(imoNumber), trackingStartResponseSchema, {
@@ -95,7 +103,18 @@ export function startTracking(
   })
 }
 
-/** Contract §7. NOT YET IMPLEMENTED on the backend. */
+/** Contract §6.1. */
+export function stopTracking(
+  imoNumber: string,
+  opts?: RequestOptions,
+): Promise<TrackingStopResponse> {
+  return request(ENDPOINTS.trackingStop(imoNumber), trackingStopResponseSchema, {
+    method: 'POST',
+    ...opts,
+  })
+}
+
+/** Contract §7. */
 export function getShipStatus(imoNumber: string, opts?: RequestOptions): Promise<ShipStatusResponse> {
   return request(ENDPOINTS.shipStatus(imoNumber), shipStatusResponseSchema, {
     method: 'GET',
@@ -103,7 +122,7 @@ export function getShipStatus(imoNumber: string, opts?: RequestOptions): Promise
   })
 }
 
-/** Contract §8. NOT YET IMPLEMENTED on the backend. */
+/** Contract §8. Returns ROUTE_NOT_FOUND (404) until tracking has been started. */
 export function getCurrentRoute(
   imoNumber: string,
   opts?: RequestOptions,

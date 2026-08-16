@@ -32,6 +32,7 @@ import type {
   ShipStatusResponse,
   TrackingStartRequest,
   TrackingStartResponse,
+  TrackingStopResponse,
 } from '@/types/api'
 
 // ---------------------------------------------------------------------------
@@ -309,7 +310,7 @@ export function previewRoute(payload: RoutePreviewRequest): Promise<Resolved<Rou
 
 export function startTracking(
   imoNumber: string,
-  payload: TrackingStartRequest = {},
+  payload: TrackingStartRequest,
 ): Promise<Resolved<TrackingStartResponse>> {
   return resolve(
     'Start tracking',
@@ -318,6 +319,16 @@ export function startTracking(
     () => api.startTracking(imoNumber, payload),
     () => mock.mockTrackingStart(imoNumber),
     payload,
+  )
+}
+
+export function stopTracking(imoNumber: string): Promise<Resolved<TrackingStopResponse>> {
+  return resolve(
+    'Stop tracking',
+    'POST',
+    api.ENDPOINTS.trackingStop(imoNumber),
+    () => api.stopTracking(imoNumber),
+    () => ({ imo_number: imoNumber, tracking: false, message: 'Ship tracking stopped' }),
   )
 }
 

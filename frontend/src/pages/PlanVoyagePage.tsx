@@ -91,8 +91,10 @@ export function PlanVoyagePage() {
         }))
       }
 
-      // A vessel underway is a sensible default origin.
-      if (!start) setStart(result.data.position)
+      // Seed the origin from the vessel's live AIS fix when there is one. The
+      // backend returns null whenever no transponder report is available, which
+      // is the usual case — the user then picks a start point themselves.
+      if (!start && result.data.position) setStart(result.data.position)
     } catch (err) {
       setError(err instanceof UserFacingApiError ? err.message : 'Could not identify that vessel.')
     } finally {
@@ -327,7 +329,20 @@ export function PlanVoyagePage() {
                 <Button
                   variant="accent"
                   className="mt-3 w-full"
-                  onClick={() => navigate(`/track?imo=${route.imo_number}&autostart=1`)}
+                  onClick={() => {
+                    if (!start || !destination) return
+                    // Tracking needs the destination (contract §6); carrying the
+                    // start too avoids re-deriving it from a possibly-null AIS fix.
+                    const params = new URLSearchParams({
+                      imo: route.imo_number ?? '',
+                      lat: String(destination.latitude),
+                      lon: String(destination.longitude),
+                      olat: String(start.latitude),
+                      olon: String(start.longitude),
+                      autostart: '1',
+                    })
+                    navigate(`/track?${params.toString()}`)
+                  }}
                 >
                   <Navigation className="h-4 w-4" aria-hidden />
                   Start Tracking This Voyage
