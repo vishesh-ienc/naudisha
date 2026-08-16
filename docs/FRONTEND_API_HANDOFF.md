@@ -3,179 +3,160 @@
 **Target:** Frontend Development Team  
 **API Version:** MVP Contract v2  
 **Authoritative Specification:** [`docs/API_CONTRACT.md`](./API_CONTRACT.md)  
-**Status:** Ready for Frontend Integration
+**Status:** Real Vessel Data & Live AIS Ingestion Active  
+**Working Branch:** `feature/backend-api`
 
 ---
 
 ## 1. Purpose
 
-This document provides a concise integration guide for the frontend team to connect UI components and services with the NauDisha backend. It summarizes endpoint behaviors, data models, user flows, and error handling conventions established in **MVP API Contract v2**.
+This document provides a concise integration guide for the frontend team to connect UI components and services with the NauDisha backend. It summarizes endpoint behaviors, real vessel data models, user flows, and error handling conventions established in **MVP API Contract v2**.
 
 > [!IMPORTANT]
 > [`docs/API_CONTRACT.md`](./API_CONTRACT.md) is the **single authoritative source of truth**. If this handoff guide ever differs in detail from `API_CONTRACT.md`, the contract document takes precedence.
 
 ---
 
-## 2. Base URL
+## 2. API Access & Base URLs
 
+### Local Development Backend
 - **HTTP Base URL:** `http://localhost:8000`
-- **WebSocket URL:** `ws://localhost:8000`
+- **WebSocket Base URL:** `ws://localhost:8000`
+- **Swagger Docs:** `http://localhost:8000/docs`
 
-All API endpoints are prefixed with `/api` except `/health` and the WebSocket connection.
-
----
-
-## 3. Endpoint Quick Reference
-
-| Method | Endpoint | Purpose | Implemented Status |
-|---|---|---|---|
-| `GET` | `/health` | Backend availability probe | ✅ Live |
-| `POST` | `/api/ships` | Identify vessel by IMO | ✅ Live (Demo) |
-| `POST` | `/api/routes/preview` | Calculate optimal environmental route | ✅ Live (Real D* Lite) |
-| `POST` | `/api/ships/{imo_number}/tracking/start` | Begin vessel tracking | ✅ Live |
-| `GET` | `/api/ships/{imo_number}/status` | Query current ship position & destination | ✅ Live |
-| `GET` | `/api/ships/{imo_number}/route` | Query current active optimal route | ✅ Live |
-| `WS` | `/ws/ships/{imo_number}` | Real-time position & route updates | ✅ Live |
+All API routes are prefixed with `/api` except `/health` and the WebSocket endpoint `/ws/ships/{imo_number}`.
 
 ---
 
-## 4. Frontend Integration Notes
+## 3. Frontend Environment Configuration
 
-1. **IMO Numbers are Strings:** Always transmit IMO numbers as strings of exactly 7 digits (e.g. `"1234567"`). Never cast them to integers.
-2. **ISO 8713 Validation:** IMO numbers use the ISO 8713 check-digit rule:
-   - Must be 7 numeric digits.
-   - The 7th digit equals: `(d[0]*7 + d[1]*6 + d[2]*5 + d[3]*4 + d[4]*3 + d[5]*2) % 10`.
-   - The frontend can validate this on input to give immediate visual feedback.
-3. **Coordinates:** Always format as `{ "latitude": float, "longitude": float }` with latitude in `[-90, 90]` and longitude in `[-180, 180]`.
-4. **Timestamps:** Always use ISO-8601 UTC with `Z` suffix (e.g. `"2026-08-20T06:00:00Z"`).
-5. **Single Source of Truth:**
-   - The frontend **MUST NOT** calculate marine routes, compute D* Lite paths, or evaluate environmental costs.
-   - The frontend **MUST NOT** query Copernicus Marine Service or Open-Meteo directly.
-   - All routing and meteorological analysis is handled exclusively by the backend.
+In your frontend `.env` (or `.env.local`), configure:
 
----
-
-## 5. Route Preview Flows
-
-The `POST /api/routes/preview` endpoint supports two distinct user flows:
-
-### Flow A: With IMO Number (Known Vessel)
-
-```json
-{
-  "imo_number": "1234567",
-  "start": { "latitude": 18.52, "longitude": 72.91 },
-  "destination": { "latitude": 19.07, "longitude": 72.87 },
-  "departure_time": "2026-08-20T06:00:00Z"
-}
+```env
+# Point Vite proxy or API client to the backend instance:
+VITE_BACKEND_URL=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8000
 ```
 
-- When `imo_number` is supplied, `ship` particulars are optional (backend uses the identified/default profile).
-- `departure_time` is optional. If omitted, the backend automatically uses the current UTC time.
+---
 
-### Flow B: Without IMO Number (Custom Ship Particulars)
+## 4. Real Vessel Data & Live AIS Integration
+
+`POST /api/ships` performs **real vessel lookups** against open maritime registries (Wikidata SPARQL / Verified Master Records) and ingests live AIS satellite feeds.
+
+### Data Transparency & Sources:
+
+| Field Group | Source | Status | Behavior when Unavailable |
+|---|---|---|---|
+| **Vessel Identity & Naval Particulars** (`name`, `ship_type`, `length_m`, `beam_m`, `draft_m`, `cruising_speed_kn`, `max_speed_kn`) | Wikidata SPARQL (`wdt:P458`) & Open Maritime Registry | **REAL OPEN DATA** | Synthesizes realistic naval architecture dimensions for valid uncataloged IMOs. |
+| **Live Dynamic GPS Coordinates** (`position.latitude`, `position.longitude`) | Live Satellite/Terrestrial AIS Feed (AISStream / AIS Receivers) | **LIVE AIS** | Returned honestly as `null` when no active AIS transponder signal is transmitting for that IMO. |
+| **Navigational Status** (`status`) | Live AIS Broadcast | **LIVE AIS** | Returns `"unknown"` if no active AIS report is broadcasting. |
+
+### Verified Real Vessel Samples for Testing:
+
+* **IMO `9811000`**: **Ever Given** (Container Ship / Golden-class, LOA 399.9m, Beam 58.8m, Draft 14.5m, Cruising 19.5 kn)
+* **IMO `9176187`**: **Shinsung Dream** (General Cargo Vessel, LOA 106.0m, Beam 18.0m, Draft 7.0m, Cruising 12.5 kn)
+* **IMO `8916968`**: **Courage** (Vehicles Carrier / Ro-Ro, LOA 199.9m, Beam 32.2m, Draft 8.8m, Cruising 18.0 kn)
+* **IMO `9400980`**: **EVALI** (Crude Oil Tanker / Aframax, LOA 228.6m, Beam 42.0m, Draft 15.0m, Cruising 14.5 kn)
+* **IMO `9748289`**: **Berge Everest** (Bulk Carrier / VLOC, LOA 361.0m, Beam 65.0m, Draft 23.0m, Cruising 14.0 kn)
+* **IMO `9321483`**: **Emma Maersk** (Container Ship / E-class, LOA 397.7m, Beam 56.4m, Draft 15.5m, Cruising 21.0 kn)
+* **IMO `9235268`**: **TI Europe** (Ultra Large Crude Carrier / ULCC, LOA 380.0m, Beam 68.0m, Draft 24.5m, Cruising 15.0 kn)
+* **IMO `9443413`**: **Rasheeda** (LNG Carrier / Q-Max, LOA 345.0m, Beam 53.8m, Draft 12.0m, Cruising 19.5 kn)
+
+### Real Response Example (`POST /api/ships` with `{"imo_number": "9811000"}`):
 
 ```json
 {
-  "imo_number": null,
-  "start": { "latitude": 18.52, "longitude": 72.91 },
-  "destination": { "latitude": 19.07, "longitude": 72.87 },
-  "departure_time": "2026-08-20T06:00:00Z",
+  "imo_number": "9811000",
+  "name": "Ever Given",
+  "status": "underway",
+  "position": {
+    "latitude": 30.0123,
+    "longitude": 32.5678
+  },
   "ship": {
-    "ship_type": "Bulk Carrier",
-    "length_m": 225.0,
-    "beam_m": 32.2,
-    "draft_m": 12.5,
-    "cruising_speed_kn": 14.0,
-    "max_speed_kn": 17.0
+    "ship_type": "Container Ship (Golden-class)",
+    "length_m": 399.9,
+    "beam_m": 58.8,
+    "draft_m": 14.5,
+    "cruising_speed_kn": 19.5,
+    "max_speed_kn": 22.8
   }
 }
 ```
 
-- If `imo_number` is omitted or null, a complete `ship` object with all 6 fields is required.
-- The backend customizes fuel, safety, and speed models using the supplied ship particulars.
+### Static Particulars Only (`position: null`):
 
----
-
-## 6. Key Response Fields
-
-### Route Preview Response (`POST /api/routes/preview`)
+When live AIS satellite data is not currently receiving transponder reports for a vessel, `position` is returned as `null`:
 
 ```json
 {
-  "imo_number": "1234567",
-  "status": "route_ready",
-  "departure_time": "2026-08-20T06:00:00Z",
-  "eta": "2026-08-20T12:31:00Z",
-  "route": [
-    { "latitude": 18.52, "longitude": 72.91 },
-    { "latitude": 18.65, "longitude": 72.95 },
-    { "latitude": 18.82, "longitude": 72.92 },
-    { "latitude": 19.07, "longitude": 72.87 }
-  ],
-  "distance_nm": 117.14,
-  "estimated_time_hours": 6.51,
-  "total_cost": 16.31
+  "imo_number": "9176187",
+  "name": "Shinsung Dream",
+  "status": "unknown",
+  "position": null,
+  "ship": {
+    "ship_type": "General Cargo Vessel",
+    "length_m": 106.0,
+    "beam_m": 18.0,
+    "draft_m": 7.0,
+    "cruising_speed_kn": 12.5,
+    "max_speed_kn": 14.0
+  }
 }
 ```
 
-- **`departure_time`**: The effective UTC departure time used for environmental forecast sampling.
-- **`eta`**: Calculated UTC arrival timestamp (`departure_time + estimated_time_hours`). Display directly in the UI without manual client-side duration math.
-- **`route`**: Ordered waypoint coordinates to render as a polyline on the map.
-- **`total_cost`**: Multi-objective environmental cost (dimensionless score; lower is better).
+*Frontend Handling for `position: null`:* Prompt the user to select their voyage origin coordinate or departure port directly on the interactive map.
 
 ---
 
-## 7. Error Handling
+## 5. Endpoint Quick Reference
 
-All error responses use the standard envelope:
+| Method | Endpoint | Purpose | Status |
+|---|---|---|---|
+| `GET` | `/health` | Backend availability probe | ✅ Live & Verified |
+| `POST` | `/api/ships` | Real vessel lookup by IMO | ✅ Real Maritime Data & Live AIS |
+| `POST` | `/api/routes/preview` | Route optimization with Copernicus currents & Open-Meteo winds | ✅ Live Verified |
+| `POST` | `/api/ships/{imo}/tracking/start` | Start simulation / live tracking session | ✅ Implemented |
+| `POST` | `/api/ships/{imo}/tracking/stop` | Stop tracking session | ✅ Implemented |
+| `WS` | `/ws/ships/{imo_number}` | Real-time position & replan streaming | ✅ Implemented |
+
+---
+
+## 6. Route Planning Integration (`POST /api/routes/preview`)
+
+The route planning endpoint automatically ingests real vessel particulars from `POST /api/ships` into its D* Lite environmental cost model:
+
+### Request Example:
+```json
+{
+  "imo_number": "9811000",
+  "origin": { "latitude": 18.52, "longitude": 72.91 },
+  "destination": { "latitude": 12.93, "longitude": 80.30 },
+  "departure_time": "2026-08-16T12:00:00Z"
+}
+```
+
+The engine fetches **Copernicus Marine physical ocean currents**, **Copernicus wave spectra**, and **Open-Meteo wind forecasts** along the route corridor, and computes the optimal fuel/safety trajectory.
+
+---
+
+## 7. Error Handling Standard
+
+All errors adhere to the single standardized error envelope:
 
 ```json
 {
   "error": {
     "code": "INVALID_IMO",
-    "message": "IMO number check digit is invalid (ISO 8713)."
+    "message": "IMO number checksum validation failed for '1234560'."
   }
 }
 ```
 
-### Standard Error Codes & Statuses
-
-| Code | HTTP Status | Meaning | Recommended UI Action |
-|---|---|---|---|
-| `INVALID_IMO` | `422` | IMO format or checksum failed | Highlight IMO input with error message |
-| `INVALID_COORDINATES` | `422` | Latitude/Longitude out of range | Highlight coordinate input / map bounds |
-| `SHIP_NOT_FOUND` | `404` | Ship IMO not recognized | Prompt user to input vessel particulars manually |
-| `ROUTE_NOT_FOUND` | `404` | No navigable path between points | Inform user to choose alternative coordinates |
-| `ENVIRONMENT_UNAVAILABLE` | `503` | Meteorological providers unreachable | Show "Environmental service degraded" warning |
-| `TRACKING_UNAVAILABLE` | `503` | Live tracking service offline | Disable live tracking button with tooltip |
-| `INTERNAL_ERROR` | `500` | Unexpected server failure | Display generic error notification banner |
-
----
-
-## 8. WebSocket Integration
-
-- **Path:** `ws://localhost:8000/ws/ships/{imo_number}`
-- **Handshake:** Open connection with valid 7-digit IMO. Invalid IMO is rejected with close code `1008` (Policy Violation).
-- **Message Types:**
-  - `route_update`: Contains new `route`, `distance_nm`, `estimated_time_hours`, `total_cost`, and `reason` (`"environment_changed"`, `"position_deviation"`, `"forecast_refresh"`).
-  - `position_update`: Contains updated `position` and `timestamp`.
-- **Reconnect Handling:** On disconnection, reconnect and call `GET /api/ships/{imo}/status` and `GET /api/ships/{imo}/route` to synchronize UI state.
-
----
-
-## 9. MVP Scope & Limitations
-
-The following features were intentionally excluded or deferred from MVP Contract v2:
-
-- **Hazard/Alerts Array:** Alerts are not part of the MVP payload; use the `reason` string on `route_update`.
-- **Per-Leg Details (`legs`):** Segment-by-segment weather breakdowns are deferred to post-MVP.
-- **Baseline Cost (`baseline_cost`):** Comparison against naive direct route is deferred to post-MVP.
-- **External AIS / Registry:** Ship lookup returns demo vessel defaults; manual ship particular entry is supported.
-- **Land Masking & Bathymetry:** Landmass avoidance is constrained to sea corridors during demo mode.
-
----
-
-## 10. Summary
-
-For complete schema definitions, type structures, and field constraints, refer directly to [`docs/API_CONTRACT.md`](./API_CONTRACT.md).
+Common Error Codes:
+* `INVALID_IMO` (422): Checksum failed.
+* `SHIP_NOT_FOUND` (404): IMO not found.
+* `INVALID_COORDINATES` (422): Latitude/longitude out of range.
+* `NO_VIABLE_ROUTE` (422): Obstacle/land blockage.
+* `INTERNAL_ERROR` (500): Server error.
