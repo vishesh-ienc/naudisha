@@ -1,11 +1,12 @@
 """
 Vessel Data Providers and Real Maritime Registry Integration for NauDisha.
 Provides clean abstraction for querying real vessel master particulars and live AIS data
-by IMO number, with caching, live Wikidata SPARQL lookup, and AISStream live tracking.
+by IMO number, with caching, live Wikidata SPARQL lookup, and real-time open AIS ingestion.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
@@ -14,7 +15,8 @@ import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Any
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("naudisha.data.vessel")
 
@@ -35,7 +37,7 @@ class AISDataRecord:
     heading_deg: Optional[float] = None
     nav_status: str = "underway"  # "underway", "stopped", "at_anchor", "moored", "unknown"
     timestamp_utc: Optional[str] = None
-    source: str = "aisstream"  # "aisstream", "digitraffic", "mock"
+    source: str = "digitraffic"  # "digitraffic", "aisstream", "mock"
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,7 @@ class VesselRecord:
     position_lon: Optional[float] = None
     last_updated: Optional[str] = None
     mmsi: Optional[str] = None
-    source: str = "registry"  # "wikidata", "registry", "aisstream", "synthetic", "mock"
+    source: str = "registry"  # "wikidata", "registry", "digitraffic", "aisstream", "synthetic", "mock"
     is_live_position: bool = False
 
 
@@ -307,16 +309,109 @@ class AISProvider(ABC):
 
 
 # =============================================================================
-# Live AIS Manager & Providers
+# Real Open AIS Provider & Live Manager
 # =============================================================================
+
+class DigitrafficAISProvider(AISProvider):
+    """
+    Genuine open real-time maritime AIS provider querying Digitraffic Marine API.
+    Fetches live satellite and terrestrial AIS transponder reports across open waterways.
+    """
+
+    def __init__(self, cache_ttl_seconds: float = 60.0) -> None:
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self._last_fetch_time: float = 0.0
+        self._imo_to_mmsi: Dict[str, str] = {}
+        self._live_locations: Dict[str, AISDataRecord] = {}
+
+    def _fetch_live_data(self) -> None:
+        now = time.time()
+        if (now - self._last_fetch_time) < self.cache_ttl_seconds:
+            return
+
+        try:
+            # 1. Fetch metadata mapping (IMO -> MMSI) if not cached
+            if not self._imo_to_mmsi:
+                v_req = urllib.request.Request(
+                    "https://meri.digitraffic.fi/api/ais/v1/vessels",
+                    headers={"Digitraffic-User": "NauDisha-Maritime-API/1.0", "Accept-Encoding": "gzip"},
+                )
+                with urllib.request.urlopen(v_req, timeout=4) as resp:
+                    content = resp.read()
+                    if resp.info().get("Content-Encoding") == "gzip":
+                        content = gzip.decompress(content)
+                    meta_list = json.loads(content.decode("utf-8"))
+                    for v in meta_list:
+                        imo = v.get("imo")
+                        mmsi = v.get("mmsi")
+                        if imo and mmsi:
+                            self._imo_to_mmsi[str(imo)] = str(mmsi)
+
+            # 2. Fetch live locations
+            l_req = urllib.request.Request(
+                "https://meri.digitraffic.fi/api/ais/v1/locations",
+                headers={"Digitraffic-User": "NauDisha-Maritime-API/1.0", "Accept-Encoding": "gzip"},
+            )
+            with urllib.request.urlopen(l_req, timeout=4) as resp:
+                content = resp.read()
+                if resp.info().get("Content-Encoding") == "gzip":
+                    content = gzip.decompress(content)
+                features = json.loads(content.decode("utf-8")).get("features", [])
+
+            # Reverse map MMSI -> IMO
+            mmsi_to_imo = {mmsi: imo for imo, mmsi in self._imo_to_mmsi.items()}
+
+            new_locations: Dict[str, AISDataRecord] = {}
+            for feat in features:
+                mmsi_str = str(feat.get("mmsi"))
+                coords = feat.get("geometry", {}).get("coordinates", [])
+                props = feat.get("properties", {})
+                if len(coords) >= 2:
+                    lon, lat = float(coords[0]), float(coords[1])
+                    sog = props.get("sog")
+                    cog = props.get("cog")
+                    heading = props.get("heading")
+                    nav_stat_code = props.get("navStat", 0)
+                    nav_status = "underway" if nav_stat_code in (0, 7, 8) else ("at_anchor" if nav_stat_code == 1 else "stopped")
+
+                    imo_num = mmsi_to_imo.get(mmsi_str)
+                    rec = AISDataRecord(
+                        mmsi=mmsi_str,
+                        imo_number=imo_num,
+                        latitude=lat,
+                        longitude=lon,
+                        speed_kn=float(sog) if sog is not None else None,
+                        course_deg=float(cog) if cog is not None else None,
+                        heading_deg=float(heading) if heading is not None else None,
+                        nav_status=nav_status,
+                        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                        source="digitraffic",
+                    )
+                    new_locations[mmsi_str] = rec
+                    if imo_num:
+                        new_locations[imo_num] = rec
+
+            self._live_locations = new_locations
+            self._last_fetch_time = now
+        except Exception as exc:
+            logger.debug("Digitraffic live AIS fetch skipped/failed: %s", exc)
+
+    def get_live_position(self, imo_number: str) -> Optional[AISDataRecord]:
+        self._fetch_live_data()
+        return self._live_locations.get(imo_number)
+
 
 class LiveAISManager(AISProvider):
     """
-    In-memory live AIS store with staleness eviction.
-    Ingests live AIS messages and maps them to IMO/MMSI.
+    In-memory live AIS store with staleness eviction and external provider fallback.
     """
 
-    def __init__(self, stale_threshold_seconds: float = 86400.0) -> None:
+    def __init__(
+        self,
+        external_provider: Optional[AISProvider] = None,
+        stale_threshold_seconds: float = 86400.0,
+    ) -> None:
+        self.external_provider = external_provider if external_provider is not None else DigitrafficAISProvider()
         self.stale_threshold_seconds = stale_threshold_seconds
         self._positions: Dict[str, Tuple[AISDataRecord, float]] = {}
 
@@ -329,14 +424,24 @@ class LiveAISManager(AISProvider):
             self._positions[record.mmsi] = (record, now)
 
     def get_live_position(self, imo_number: str) -> Optional[AISDataRecord]:
-        """Retrieves live position if within staleness threshold."""
-        if imo_number not in self._positions:
-            return None
-        record, received_at = self._positions[imo_number]
-        if (time.time() - received_at) > self.stale_threshold_seconds:
-            # Stale position exceeds threshold -> treat as unavailable
-            return None
-        return record
+        """Retrieves live position from local feed or queries external open AIS provider."""
+        # 1. Check local in-memory stream
+        if imo_number in self._positions:
+            record, received_at = self._positions[imo_number]
+            if (time.time() - received_at) <= self.stale_threshold_seconds:
+                return record
+
+        # 2. Check external live provider
+        if self.external_provider is not None:
+            try:
+                live_record = self.external_provider.get_live_position(imo_number)
+                if live_record is not None:
+                    self.record_ais_update(live_record)
+                    return live_record
+            except Exception as exc:
+                logger.debug("External AIS provider failed for IMO %s: %s", imo_number, exc)
+
+        return None
 
 
 # =============================================================================
@@ -468,7 +573,7 @@ class CompositeVesselProvider(VesselProvider):
     2. Primary injected mock provider (for testing)
     3. Curated authoritative maritime registry
     4. Live online Wikidata SPARQL lookup
-    5. Live AIS Manager for real-time satellite GPS
+    5. Live AIS Manager for real-time satellite & terrestrial GPS
     6. Naval architecture synthesizer fallback
     """
 

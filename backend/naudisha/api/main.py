@@ -6,15 +6,15 @@ Can be executed with:
 
 from __future__ import annotations
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from naudisha.api.errors import register_exception_handlers
 from naudisha.api.routes import api_router, health_router, ws_router
 
-# Load local .env variables into environment
-load_dotenv()
+# Load .env variables from local directory or workspace root
+load_dotenv(find_dotenv())
 
 
 def create_app() -> FastAPI:
