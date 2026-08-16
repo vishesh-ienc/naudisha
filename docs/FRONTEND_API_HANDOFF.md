@@ -3,7 +3,8 @@
 **Target:** Frontend Development Team  
 **API Version:** MVP Contract v2  
 **Authoritative Specification:** [`docs/API_CONTRACT.md`](./API_CONTRACT.md)  
-**Status:** Ready for Frontend Integration
+**Status:** Deployed & Verified for Frontend Access  
+**Working Branch:** `feature/backend-api`
 
 ---
 
@@ -16,30 +17,49 @@ This document provides a concise integration guide for the frontend team to conn
 
 ---
 
-## 2. Base URL
+## 2. API Access & Base URLs
 
+### Live Deployed Backend (Public Remote Access)
+- **HTTP Base URL:** `https://lemon-windows-taste.loca.lt`
+- **WebSocket Base URL:** `wss://lemon-windows-taste.loca.lt`
+
+### Local Development Backend
 - **HTTP Base URL:** `http://localhost:8000`
-- **WebSocket URL:** `ws://localhost:8000`
+- **WebSocket Base URL:** `ws://localhost:8000`
 
-All API endpoints are prefixed with `/api` except `/health` and the WebSocket connection.
+All endpoints are relative to the base URL. All API routes are prefixed with `/api` except `/health` and the WebSocket endpoint `/ws/ships/{imo_number}`.
 
 ---
 
-## 3. Endpoint Quick Reference
+## 3. Frontend Environment Configuration
 
-| Method | Endpoint | Purpose | Implemented Status |
+In your frontend `.env` (or `.env.local`), configure:
+
+```env
+# Point Vite proxy or API client to the backend instance:
+VITE_BACKEND_URL=https://lemon-windows-taste.loca.lt
+VITE_API_BASE_URL=https://lemon-windows-taste.loca.lt
+```
+
+*(For local testing without the tunnel, set `VITE_BACKEND_URL=http://localhost:8000`)*
+
+---
+
+## 4. Endpoint Quick Reference
+
+| Method | Endpoint | Purpose | Status |
 |---|---|---|---|
-| `GET` | `/health` | Backend availability probe | ✅ Live |
-| `POST` | `/api/ships` | Identify vessel by IMO | ✅ Live (Demo) |
-| `POST` | `/api/routes/preview` | Calculate optimal environmental route | ✅ Live (Real D* Lite) |
-| `POST` | `/api/ships/{imo_number}/tracking/start` | Begin vessel tracking | ✅ Live |
-| `GET` | `/api/ships/{imo_number}/status` | Query current ship position & destination | ✅ Live |
-| `GET` | `/api/ships/{imo_number}/route` | Query current active optimal route | ✅ Live |
-| `WS` | `/ws/ships/{imo_number}` | Real-time position & route updates | ✅ Live |
+| `GET` | `/health` | Backend availability probe | ✅ Live & Verified |
+| `POST` | `/api/ships` | Identify vessel by IMO | ✅ Live & Verified (Demo) |
+| `POST` | `/api/routes/preview` | Calculate optimal environmental route | ✅ Live & Verified (Real D* Lite) |
+| `POST` | `/api/ships/{imo_number}/tracking/start` | Begin vessel tracking | ✅ Live & Verified |
+| `GET` | `/api/ships/{imo_number}/status` | Query current ship position & destination | ✅ Live & Verified |
+| `GET` | `/api/ships/{imo_number}/route` | Query current active optimal route | ✅ Live & Verified |
+| `WS` | `/ws/ships/{imo_number}` | Real-time position & route updates | ✅ Live & Verified |
 
 ---
 
-## 4. Frontend Integration Notes
+## 5. Frontend Integration Notes
 
 1. **IMO Numbers are Strings:** Always transmit IMO numbers as strings of exactly 7 digits (e.g. `"1234567"`). Never cast them to integers.
 2. **ISO 8713 Validation:** IMO numbers use the ISO 8713 check-digit rule:
@@ -55,7 +75,7 @@ All API endpoints are prefixed with `/api` except `/health` and the WebSocket co
 
 ---
 
-## 5. Route Preview Flows
+## 6. Route Preview Flows
 
 The `POST /api/routes/preview` endpoint supports two distinct user flows:
 
@@ -97,7 +117,7 @@ The `POST /api/routes/preview` endpoint supports two distinct user flows:
 
 ---
 
-## 6. Key Response Fields
+## 7. Key Response Fields
 
 ### Route Preview Response (`POST /api/routes/preview`)
 
@@ -126,7 +146,7 @@ The `POST /api/routes/preview` endpoint supports two distinct user flows:
 
 ---
 
-## 7. Error Handling
+## 8. Error Handling
 
 All error responses use the standard envelope:
 
@@ -153,9 +173,9 @@ All error responses use the standard envelope:
 
 ---
 
-## 8. WebSocket Integration
+## 9. WebSocket Integration
 
-- **Path:** `ws://localhost:8000/ws/ships/{imo_number}`
+- **Path:** `/ws/ships/{imo_number}`
 - **Handshake:** Open connection with valid 7-digit IMO. Invalid IMO is rejected with close code `1008` (Policy Violation).
 - **Message Types:**
   - `route_update`: Contains new `route`, `distance_nm`, `estimated_time_hours`, `total_cost`, and `reason` (`"environment_changed"`, `"position_deviation"`, `"forecast_refresh"`).
@@ -164,7 +184,7 @@ All error responses use the standard envelope:
 
 ---
 
-## 9. MVP Scope & Limitations
+## 10. MVP Scope & Limitations
 
 The following features were intentionally excluded or deferred from MVP Contract v2:
 
@@ -176,6 +196,6 @@ The following features were intentionally excluded or deferred from MVP Contract
 
 ---
 
-## 10. Summary
+## 11. Summary
 
 For complete schema definitions, type structures, and field constraints, refer directly to [`docs/API_CONTRACT.md`](./API_CONTRACT.md).
