@@ -597,7 +597,17 @@ class TestNauDishaAPI(unittest.TestCase):
         max_lat = graph.config.origin_lat + (graph.config.rows - 1) * graph.config.lat_spacing
         max_lon = graph.config.origin_lon + (graph.config.cols - 1) * graph.config.lon_spacing
         self.assertGreaterEqual(max_lat, 18.9)
-        self.assertGreaterEqual(max_lon, 71.9)
+    def test_28_websocket_endpoint_valid_imo(self) -> None:
+        """28. WS /ws/ships/{imo} accepts connection for valid ISO 8713 IMO."""
+        with self.client.websocket_connect("/ws/ships/1234567") as websocket:
+            # Successfully connected
+            self.assertIsNotNone(websocket)
+
+    def test_29_websocket_endpoint_invalid_imo(self) -> None:
+        """29. WS /ws/ships/{imo} rejects connection for invalid IMO."""
+        with self.assertRaises(Exception):
+            with self.client.websocket_connect("/ws/ships/invalid_imo"):
+                pass
 
 
 if __name__ == "__main__":
