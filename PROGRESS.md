@@ -383,6 +383,63 @@ Requests are grouped by hour-bucket (`strftime("%Y-%m-%dT%H")`). Each bucket pro
 
 ---
 
-### Phase 8: Interactive Visual Dashboard & API (Upcoming) ⏳
-- REST/WebSocket API for route planning requests and real-time voyage monitoring.
-- Interactive map frontend displaying vessel trajectory, weather overlays, and dynamic route adjustments.
+### Phase 8.1: Backend API Foundation ✅ (Complete)
+**Status**: Completed (Branch: `feature/backend-api`)
+
+- **Backend Architecture & Framework**:
+  - Initialized backend API layer on dedicated branch `feature/backend-api` using **FastAPI** (0.136.1) and **Pydantic** (v2).
+  - Main app entrypoint located at [`naudisha/api/main.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/api/main.py) with CORS middleware, standard error handler registration, and modular router inclusion.
+  - Runnable locally via `uvicorn naudisha.api.main:app --reload`.
+
+- **Strict Adherence to API Contract (`docs/API_CONTRACT.md`)**:
+  - Data models and validation schemas defined in [`naudisha/api/schemas.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/api/schemas.py):
+    - `Coordinate` (`latitude` in `[-90, 90]`, `longitude` in `[-180, 180]`).
+    - `HealthResponse` (`{"status": "ok", "service": "naudisha-backend"}`).
+    - `RoutePreviewRequest` & `RoutePreviewResponse` (`imo_number`, `status`, `route`, `distance_nm`, `estimated_time_hours`, `total_cost`).
+    - `ShipIdentifyRequest` & `ShipResponse`.
+    - `ErrorDetail` & `ErrorResponse` (`{"error": {"code": "...", "message": "..."}}`).
+  - Standardized error codes implemented in [`naudisha/api/errors.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/api/errors.py): `INVALID_IMO`, `INVALID_COORDINATES`, `ROUTE_NOT_FOUND`, `ENVIRONMENT_UNAVAILABLE`, `TRACKING_UNAVAILABLE`, `SHIP_NOT_FOUND`, `INTERNAL_ERROR`.
+
+- **Decoupled Service Layer (`RoutePlanningService`)**:
+  - Implemented in [`naudisha/api/services.py`](file:///c:/Users/VISHESH/Desktop/naudisha/naudisha/api/services.py) as an orchestration adapter between HTTP controllers and the underlying routing engine.
+  - Automatically constructs bounding navigation grids, samples environmental providers (or baseline uniform conditions), identifies waypoint nodes, runs D* Lite path planning, and extracts route metrics.
+  - **No routing mathematics or D* Lite logic is implemented inside API controllers**.
+  - Full dependency injection support via FastAPI `Depends` for offline testing.
+
+- **Endpoints Created**:
+  - `GET /health` — Isolated, lightweight health check returning `200 OK` without querying external meteorological providers or routing solvers.
+  - `POST /api/routes/preview` — Optimal route preview endpoint returning waypoints and voyage metrics.
+  - `POST /api/ships` — Vessel identification endpoint for voyage planning and tracking.
+
+- **Confirmation of Unchanged Routing Core**:
+  - **Zero modifications** to D* Lite algorithm (`naudisha/routing/dstar_lite.py`).
+  - **Zero modifications** to GeographicGridGraph routing mathematics (`naudisha/routing/graph.py`).
+  - **Zero modifications** to CostModel formulas and scorers (`naudisha/cost/`).
+  - **Zero modifications** to Copernicus and Open-Meteo conversion mathematics (`naudisha/data/`).
+
+- **Test Results (138/138 Unit Tests Passing — Zero Regressions)**:
+  - Added 16 new offline unit and integration tests in [`tests/test_api.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_api.py):
+    1. `GET /health` verification (status ok, service name).
+    2. Valid `POST /api/routes/preview` request and schema validation.
+    3. Invalid latitude out-of-bounds error handling (`INVALID_COORDINATES`).
+    4. Invalid longitude out-of-bounds error handling (`INVALID_COORDINATES`).
+    5. Missing required field validation (`destination`).
+    6. Missing IMO number validation (`INVALID_IMO`).
+    7. Alphabetic IMO validation rejection (`INVALID_IMO`).
+    8. Short IMO validation rejection (`INVALID_IMO`).
+    9. Dependency injection with custom offline provider.
+    10. Exact response JSON keys match with `docs/API_CONTRACT.md`.
+    11. Environmental provider failure mapped to 503 `ENVIRONMENT_UNAVAILABLE`.
+    12. Route not found mapped to 404 `ROUTE_NOT_FOUND`.
+    13. Unhandled exception mapped to 500 `INTERNAL_ERROR` without leaking traces.
+    14. Direct `RoutePlanningService.plan_preview_route()` execution.
+    15. Same start and destination coordinates edge case handling.
+    16. `POST /api/ships` identification endpoint verification.
+  - **Test count progression**: 122 → **138** (16 new, 0 regressions).
+
+---
+
+### Phase 8.2: Live Ship Tracking & WebSocket Updates (Upcoming) ⏳
+- Implementation of ship tracking lifecycle endpoints (`POST /api/ships/{imo_number}/tracking/start`, `GET /api/ships/{imo_number}/status`, `GET /api/ships/{imo_number}/route`).
+- WebSocket server endpoint (`/ws/ships/{imo_number}`) for real-time route update broadcasts and position updates.
+- Simulated demo mode generator for dynamic environmental changes and vessel movement.
