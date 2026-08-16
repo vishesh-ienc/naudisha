@@ -199,6 +199,32 @@ class ShipResponse(BaseModel):
 class TrackingStartRequest(BaseModel):
     """Request schema to begin ship tracking."""
     destination: Coordinate = Field(..., description="Voyage destination coordinates")
+    origin: Optional[Coordinate] = Field(
+        None,
+        description=(
+            "Optional starting position. Falls back to the vessel's live AIS position, "
+            "then to the demo-corridor default when no AIS fix is available."
+        ),
+    )
+    departure_time: Optional[str] = Field(
+        None,
+        description="Optional ISO 8601 UTC departure timestamp for environmental sampling",
+        examples=["2026-08-20T06:00:00Z"],
+    )
+
+    @field_validator("departure_time")
+    @classmethod
+    def validate_departure_time(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.strip()
+        if not cleaned:
+            return None
+        try:
+            datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        except Exception as exc:
+            raise ValueError(f"Invalid ISO 8601 UTC departure_time format: {cleaned}") from exc
+        return cleaned
 
 
 class TrackingStartResponse(BaseModel):
@@ -206,6 +232,13 @@ class TrackingStartResponse(BaseModel):
     imo_number: str
     tracking: bool = True
     message: str = "Ship tracking started"
+
+
+class TrackingStopResponse(BaseModel):
+    """Response schema for stop tracking."""
+    imo_number: str
+    tracking: bool = False
+    message: str = "Ship tracking stopped"
 
 
 class ShipStatusResponse(BaseModel):

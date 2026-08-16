@@ -26,12 +26,19 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0.0",
+    # Imported unconditionally by naudisha.api.main; without it nothing starts
+    # and the whole test suite fails at collection.
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "httpx>=0.24.0",
+    # tests/test_copernicus_provider.py and test_copernicus_batch_provider.py
+    # build DataFrames directly.
+    "pandas>=2.0.0",
+    "websockets>=12.0",
 ]
 marine = [
     "copernicusmarine>=2.0.0",
@@ -40,6 +47,9 @@ api = [
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
     "httpx>=0.24.0",
+    # uvicorn negotiates WebSocket support at startup. Without this the
+    # /ws/ships/{imo} endpoint answers 404 even though the route is registered.
+    "websockets>=12.0",
 ]
 
 [tool.setuptools.packages.find]

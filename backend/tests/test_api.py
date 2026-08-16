@@ -533,6 +533,40 @@ class TestNauDishaAPI(unittest.TestCase):
 
     def test_22_ship_route_endpoint(self) -> None:
         """22. GET /api/ships/{imo}/route returns route, statistics, destination, updated_at."""
+        # Starts its own session. The route endpoint is session-backed, so this
+        # test must not rely on one left behind by an earlier test — that made
+        # it pass in a full run and fail in isolation.
+        #
+        # The route service is overridden because the default constructs a live
+        # CompositeEnvironmentalProvider, and this suite must stay fully offline.
+        import time
+
+        from naudisha.api.tracking import tracking_manager
+
+        tracking_manager.clear()
+        self.addCleanup(tracking_manager.clear)
+
+        offline_service = RoutePlanningService(environment_provider=DummyWeatherProvider())
+        self.client.app.dependency_overrides[get_route_service] = lambda: offline_service
+        self.addCleanup(lambda: self.client.app.dependency_overrides.pop(get_route_service, None))
+
+        start = self.client.post(
+            "/api/ships/1234567/tracking/start",
+            json={
+                "destination": {"latitude": 19.07, "longitude": 72.42},
+                "origin": {"latitude": 18.52, "longitude": 72.55},
+            },
+        )
+        self.assertEqual(start.status_code, 200)
+
+        # Planning runs on a worker thread so the request never blocks on it.
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            session = tracking_manager.get("1234567")
+            if session is not None and not session.planning and session.route:
+                break
+            time.sleep(0.01)
+
         response = self.client.get("/api/ships/1234567/route")
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -544,6 +578,17 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertIn("estimated_time_hours", data)
         self.assertIn("total_cost", data)
         self.assertIn("updated_at", data)
+
+    def test_22b_ship_route_requires_active_session(self) -> None:
+        """22b. GET /api/ships/{imo}/route returns ROUTE_NOT_FOUND when no voyage is being tracked."""
+        from naudisha.api.tracking import tracking_manager
+
+        tracking_manager.clear()
+        self.addCleanup(tracking_manager.clear)
+
+        response = self.client.get("/api/ships/1234567/route")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "ROUTE_NOT_FOUND")
 
     # -------------------------------------------------------------------------
     # 8. Ship Profile Schema Mapping Unit Tests

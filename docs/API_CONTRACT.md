@@ -326,6 +326,8 @@ POST /api/ships/1234567/tracking/start
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `destination` | `Coordinate` | Yes | Voyage destination for route planning and replanning |
+| `origin` | `Coordinate` or `null` | No | Starting position. Falls back to the vessel's live AIS position, then to a default open-water origin when no AIS fix is available. |
+| `departure_time` | `string` or `null` | No | ISO 8601 UTC timestamp used for environmental forecast sampling |
 
 ### Response — 200 OK
 
@@ -343,14 +345,56 @@ POST /api/ships/1234567/tracking/start
 | `tracking` | `boolean` | Always `true` on success |
 | `message` | `string` | Human-readable confirmation |
 
+**This call returns immediately.** Route computation samples live Copernicus
+Marine data and takes up to ~2 minutes from cold, so it runs in the background.
+Until it completes, `GET /api/ships/{imo}/route` reports
+`route_status: "updating"` with an empty `route` array. When the plan lands, a
+`route_update` message is pushed to any connected WebSocket client (§10).
+
+Clients must not treat `"updating"` as an error, and must not block the UI
+waiting for the first route.
+
 ### Errors
 
 | Code | HTTP | When |
 |---|---|---|
 | `INVALID_IMO` | 422 | IMO in URL path fails §2.3 validation |
-| `INVALID_COORDINATES` | 422 | `destination` coordinates out of bounds |
+| `INVALID_COORDINATES` | 422 | `destination` coordinates out of bounds, or equal to the origin |
 | `SHIP_NOT_FOUND` | 404 | IMO not recognized |
 | `TRACKING_UNAVAILABLE` | 503 | Tracking service is not available |
+
+---
+
+## §6.1 POST /api/ships/{imo_number}/tracking/stop
+
+End an active tracking session.
+
+### Request
+
+```
+POST /api/ships/1234567/tracking/stop
+```
+
+No request body.
+
+### Response — 200 OK
+
+```json
+{
+  "imo_number": "1234567",
+  "tracking": false,
+  "message": "Ship tracking stopped"
+}
+```
+
+Idempotent: stopping a vessel that is not being tracked returns 200 with
+`message: "No active tracking session"`.
+
+### Errors
+
+| Code | HTTP | When |
+|---|---|---|
+| `INVALID_IMO` | 422 | IMO in URL path fails §2.3 validation |
 
 ---
 
@@ -682,13 +726,31 @@ The backend is the single source of truth for all routing, scoring, and environm
 | Method | Path | Purpose | Status |
 |---|---|---|---|
 | `GET` | `/health` | Backend availability check | Implemented |
-| `POST` | `/api/ships` | Identify vessel by IMO | Implemented (demo) |
+| `POST` | `/api/ships` | Identify vessel by IMO | Implemented (real vessel data + live AIS) |
 | `POST` | `/api/routes/preview` | Calculate optimal route | Implemented |
-| `POST` | `/api/ships/{imo}/tracking/start` | Begin live tracking | Planned |
-| `GET` | `/api/ships/{imo}/status` | Current ship status | Planned |
-| `GET` | `/api/ships/{imo}/route` | Current optimal route | Planned |
-| `WS` | `/ws/ships/{imo}` | Live position and route updates | Planned |
+| `POST` | `/api/ships/{imo}/tracking/start` | Begin live tracking | Implemented |
+| `POST` | `/api/ships/{imo}/tracking/stop` | End live tracking | Implemented |
+| `GET` | `/api/ships/{imo}/status` | Current ship status | Implemented |
+| `GET` | `/api/ships/{imo}/route` | Current optimal route | Implemented |
+| `WS` | `/ws/ships/{imo}` | Live position and route updates | Implemented |
 
-Endpoints marked **Planned** are defined in this contract so both frontend and backend can build against them independently. The frontend should use mock data matching these response shapes until each endpoint is live.
+All endpoints are live. `/status` and `/route` are backed by real tracking
+sessions rather than fixed responses, and the WebSocket streams genuine
+`position_update` and `route_update` messages from the navigation simulator.
+
+**Known limitations, so clients build around them rather than into them:**
+
+- `POST /api/ships` returns `position: null` when no live AIS report is
+  available for that vessel, which is the common case without an
+  `AISSTREAM_API_KEY`. Clients must handle a null position — typically by asking
+  the user to choose a starting point.
+- A cold `POST /api/routes/preview` can take ~2 minutes while Copernicus Marine
+  is queried; repeat requests for the same corridor and hour are served from
+  cache in under a second. Set client timeouts accordingly.
+- Vessel movement during tracking is simulated dead reckoning along the planned
+  route, not an AIS observation feed. Interfaces should say so.
+- The routing grid is 4-connected (N/S/E/W), so routes contain right-angle
+  steps. Clients may smooth the polyline for display but must not alter the
+  reported waypoints or distances.
 
 Additional endpoints should only be added when a real MVP requirement demands them.

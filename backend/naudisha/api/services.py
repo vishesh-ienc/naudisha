@@ -248,6 +248,35 @@ class RoutePlanningService:
                     total_nm += d
                     total_hours += d / max(effective_ship.cruising_speed, 1.0)
 
+        # 6b. Anchor the route to the caller's true endpoints.
+        #
+        # D* Lite operates on grid nodes, so `path` begins and ends at whichever
+        # nodes the requested coordinates snapped to — up to half a grid cell
+        # away. Returning that raw path means the drawn route floats away from
+        # the requested start/destination, and `distance_nm` silently omits both
+        # approach legs (measured at ~8 NM each on a 0.25 deg grid, against a
+        # 17 NM reported total).
+        #
+        # Prepending the true origin and appending the true destination makes the
+        # geometry and the distance describe the same voyage. Contract §8 also
+        # requires the tracked route to begin at the vessel's current position.
+        approach_speed = max(effective_ship.cruising_speed, 1.0)
+
+        if route_coords:
+            first = route_coords[0]
+            if not math_isclose_coords(start_lat, start_lon, first[0], first[1]):
+                lead_nm = calculate_haversine_distance(start_lat, start_lon, first[0], first[1])
+                route_coords.insert(0, (round(start_lat, 4), round(start_lon, 4)))
+                total_nm += lead_nm
+                total_hours += lead_nm / approach_speed
+
+            last = route_coords[-1]
+            if not math_isclose_coords(dest_lat, dest_lon, last[0], last[1]):
+                tail_nm = calculate_haversine_distance(last[0], last[1], dest_lat, dest_lon)
+                route_coords.append((round(dest_lat, 4), round(dest_lon, 4)))
+                total_nm += tail_nm
+                total_hours += tail_nm / approach_speed
+
         # 7. Compute ETA
         eta_dt = dep_dt + timedelta(hours=total_hours)
         eta_iso = eta_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
