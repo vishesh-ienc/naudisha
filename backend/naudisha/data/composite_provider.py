@@ -10,6 +10,7 @@ Implements BatchCapableProvider for efficient grid population:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -134,17 +135,32 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
         #    Open-Meteo caches per (round(lat,2), round(lon,2), hour) — so pre-populate
         #    the cache by fetching each unique cell once. The cache handles dedup implicitly,
         #    but we explicitly fetch unique cells to count network requests for diagnostics.
-        seen_cells = set()
+        #    Unique cells are fetched concurrently. Each Open-Meteo call is
+        #    ~1.5s of pure network latency, so a 5x5 grid's 8 unique cells cost
+        #    ~12s in sequence but ~2s in parallel. The pool is capped so a large
+        #    grid cannot open dozens of sockets against a free public API.
+        seen_cells: set = set()
+        unique_reqs = []
         for req in request_list:
             cell_key = (round(req.lat, 2), round(req.lon, 2))
             if cell_key not in seen_cells:
                 seen_cells.add(cell_key)
-                # fetch_wind() populates the internal cache; subsequent calls are free
-                self.wind_provider.fetch_wind(
-                    lat=req.lat,
-                    lon=req.lon,
-                    timestamp=req.timestamp,
+                unique_reqs.append(req)
+
+        if unique_reqs:
+            def _warm(req):
+                # Populates the provider's internal cache; the assembly pass
+                # below then reads it without further network calls.
+                return self.wind_provider.fetch_wind(
+                    lat=req.lat, lon=req.lon, timestamp=req.timestamp
                 )
+
+            with ThreadPoolExecutor(
+                max_workers=min(8, len(unique_reqs)), thread_name_prefix="openmeteo"
+            ) as pool:
+                # Consume the results so any exception surfaces here rather than
+                # being swallowed and reappearing as a confusing cache miss.
+                list(pool.map(_warm, unique_reqs))
 
         # 3. Assemble combined results
         results: Dict[ConditionRequest, EnvironmentalData] = {}

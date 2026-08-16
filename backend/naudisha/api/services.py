@@ -8,7 +8,7 @@ Strictly contains NO routing mathematics or D* Lite internals.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -36,6 +36,56 @@ from naudisha.api.errors import (
 logger = logging.getLogger("naudisha.api.services")
 
 
+def _opt_round(value: Optional[float], digits: int) -> Optional[float]:
+    """Rounds a value that may legitimately be absent, preserving None."""
+    return None if value is None else round(value, digits)
+
+
+@dataclass
+class RouteLegResult:
+    """
+    Per-segment breakdown of a planned route.
+
+    This is what lets a client explain *why* a route was chosen rather than only
+    drawing it. Every value here is already computed by the cost model while
+    evaluating the graph edge — nothing is recalculated or approximated.
+
+    Sign conventions follow `DerivedSegmentMetrics`:
+      * `along_track_current_kn` is positive when the current assists.
+      * `relative_wind_dir` is 0 deg for a headwind and 180 deg for a tailwind.
+    """
+    from_lat: float
+    from_lon: float
+    to_lat: float
+    to_lon: float
+    distance_nm: float
+    travel_time_hours: float
+    bearing: float
+    cost: float
+
+    # Environment sampled at the segment midpoint.
+    wind_speed_kn: Optional[float] = None
+    wind_direction_deg: Optional[float] = None
+    wave_height_m: Optional[float] = None
+    wave_period_s: Optional[float] = None
+    current_speed_kn: Optional[float] = None
+    current_direction_deg: Optional[float] = None
+
+    # Derived hydrodynamics — the basis of the human-readable explanation.
+    relative_wind_dir: Optional[float] = None
+    relative_current_dir: Optional[float] = None
+    along_track_current_kn: Optional[float] = None
+    effective_speed_kn: Optional[float] = None
+
+    # Normalised component scores, 0.0 best to 1.0 worst.
+    time_score: Optional[float] = None
+    fuel_score: Optional[float] = None
+    wind_score: Optional[float] = None
+    wave_score: Optional[float] = None
+    current_score: Optional[float] = None
+    safety_score: Optional[float] = None
+
+
 @dataclass
 class RoutePlanResult:
     """Domain model output for a planned route calculation."""
@@ -47,6 +97,7 @@ class RoutePlanResult:
     total_cost: float
     departure_time: str  # ISO-8601 UTC timestamp string
     eta: str             # ISO-8601 UTC timestamp string
+    legs: List[RouteLegResult] = field(default_factory=list)
 
 
 class RoutePlanningService:
@@ -235,18 +286,71 @@ class RoutePlanningService:
             if node:
                 route_coords.append((round(node.lat, 4), round(node.lon, 4)))
 
+        legs: List[RouteLegResult] = []
+
         for i in range(len(path) - 1):
             edge = graph.get_edge(path[i], path[i + 1])
+            n1 = graph.get_node(path[i])
+            n2 = graph.get_node(path[i + 1])
+
             if edge and edge.evaluation and edge.evaluation.metrics:
-                total_nm += edge.evaluation.metrics.distance_nm
-                total_hours += edge.evaluation.metrics.travel_time_hours
-            else:
-                n1 = graph.get_node(path[i])
-                n2 = graph.get_node(path[i + 1])
-                if n1 and n2:
-                    d = calculate_haversine_distance(n1.lat, n1.lon, n2.lat, n2.lon)
-                    total_nm += d
-                    total_hours += d / max(effective_ship.cruising_speed, 1.0)
+                metrics = edge.evaluation.metrics
+                total_nm += metrics.distance_nm
+                total_hours += metrics.travel_time_hours
+
+                # The cost model has already derived everything below while
+                # evaluating this edge; surfacing it costs nothing and is what
+                # allows a client to explain the routing decision.
+                env = edge.env_data
+                scores = edge.evaluation.scores
+
+                legs.append(
+                    RouteLegResult(
+                        from_lat=round(n1.lat, 4) if n1 else 0.0,
+                        from_lon=round(n1.lon, 4) if n1 else 0.0,
+                        to_lat=round(n2.lat, 4) if n2 else 0.0,
+                        to_lon=round(n2.lon, 4) if n2 else 0.0,
+                        distance_nm=round(metrics.distance_nm, 2),
+                        travel_time_hours=round(metrics.travel_time_hours, 3),
+                        bearing=round(metrics.bearing, 1),
+                        cost=round(edge.cost, 4),
+                        wind_speed_kn=_opt_round(getattr(env, "wind_speed", None), 1),
+                        wind_direction_deg=_opt_round(getattr(env, "wind_direction", None), 0),
+                        wave_height_m=_opt_round(getattr(env, "wave_height", None), 2),
+                        wave_period_s=_opt_round(getattr(env, "wave_period", None), 1),
+                        current_speed_kn=_opt_round(getattr(env, "current_speed", None), 2),
+                        current_direction_deg=_opt_round(getattr(env, "current_direction", None), 0),
+                        relative_wind_dir=round(metrics.relative_wind_dir, 1),
+                        relative_current_dir=round(metrics.relative_current_dir, 1),
+                        along_track_current_kn=round(metrics.along_track_current, 3),
+                        effective_speed_kn=round(metrics.effective_speed, 2),
+                        time_score=round(scores.time_score, 4),
+                        fuel_score=round(scores.fuel_score, 4),
+                        wind_score=round(scores.wind_score, 4),
+                        wave_score=round(scores.wave_score, 4),
+                        current_score=round(scores.current_score, 4),
+                        safety_score=round(scores.safety_score, 4),
+                    )
+                )
+            elif n1 and n2:
+                d = calculate_haversine_distance(n1.lat, n1.lon, n2.lat, n2.lon)
+                hours = d / max(effective_ship.cruising_speed, 1.0)
+                total_nm += d
+                total_hours += hours
+                # No evaluation available for this edge: emit geometry only
+                # rather than inventing environmental values.
+                legs.append(
+                    RouteLegResult(
+                        from_lat=round(n1.lat, 4),
+                        from_lon=round(n1.lon, 4),
+                        to_lat=round(n2.lat, 4),
+                        to_lon=round(n2.lon, 4),
+                        distance_nm=round(d, 2),
+                        travel_time_hours=round(hours, 3),
+                        bearing=0.0,
+                        cost=0.0,
+                    )
+                )
 
         # 6b. Anchor the route to the caller's true endpoints.
         #
@@ -290,6 +394,7 @@ class RoutePlanningService:
             total_cost=round(cost, 2),
             departure_time=dep_iso,
             eta=eta_iso,
+            legs=legs,
         )
 
     def _build_bounding_grid(

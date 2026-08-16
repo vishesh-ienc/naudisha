@@ -411,7 +411,21 @@ class LiveAISManager(AISProvider):
         external_provider: Optional[AISProvider] = None,
         stale_threshold_seconds: float = 86400.0,
     ) -> None:
-        self.external_provider = external_provider if external_provider is not None else DigitrafficAISProvider()
+        # Default to the environment-configured chain: AISStream worldwide when
+        # AISSTREAM_API_KEY is set, falling back to the key-less Digitraffic
+        # Baltic feed. Imported lazily to avoid a circular import, since
+        # aisstream_provider depends on this module's AISProvider/AISDataRecord.
+        if external_provider is not None:
+            self.external_provider: Optional[AISProvider] = external_provider
+        else:
+            try:
+                from naudisha.data.aisstream_provider import build_default_ais_provider
+
+                self.external_provider = build_default_ais_provider()
+            except Exception as exc:  # noqa: BLE001 - never fail construction
+                logger.debug("Falling back to Digitraffic-only AIS: %s", exc)
+                self.external_provider = DigitrafficAISProvider()
+
         self.stale_threshold_seconds = stale_threshold_seconds
         self._positions: Dict[str, Tuple[AISDataRecord, float]] = {}
 

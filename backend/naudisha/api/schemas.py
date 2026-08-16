@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing_extensions import Self
 
@@ -162,6 +162,51 @@ class RoutePreviewRequest(BaseModel):
         return self
 
 
+class RouteLegSchema(BaseModel):
+    """
+    Per-segment breakdown of a planned route.
+
+    Enables a client to explain why a route was chosen — which legs the current
+    assists, where the vessel meets head seas — rather than only drawing a line.
+    Every value is produced by the cost model during edge evaluation.
+    """
+    from_: Coordinate = Field(..., alias="from", description="Segment start coordinate")
+    to: Coordinate = Field(..., description="Segment end coordinate")
+    distance_nm: float = Field(..., description="Segment great-circle distance in nautical miles")
+    travel_time_hours: float = Field(..., description="Estimated time to traverse this segment")
+    bearing: float = Field(..., description="True course over this segment in degrees [0, 360)")
+    cost: float = Field(..., description="Weighted multi-objective cost of this segment")
+
+    wind_speed_kn: Optional[float] = Field(None, description="Wind speed at segment midpoint, knots")
+    wind_direction_deg: Optional[float] = Field(None, description="Direction wind originates from, degrees")
+    wave_height_m: Optional[float] = Field(None, description="Significant wave height Hs, metres")
+    wave_period_s: Optional[float] = Field(None, description="Peak wave period Tp, seconds")
+    current_speed_kn: Optional[float] = Field(None, description="Ocean current speed, knots")
+    current_direction_deg: Optional[float] = Field(None, description="Direction current flows towards, degrees")
+
+    relative_wind_dir: Optional[float] = Field(
+        None, description="Wind angle relative to course: 0 deg headwind, 180 deg tailwind"
+    )
+    relative_current_dir: Optional[float] = Field(
+        None, description="Current angle relative to course: 0 deg following, 180 deg opposing"
+    )
+    along_track_current_kn: Optional[float] = Field(
+        None, description="Current component along course; positive assists, negative opposes"
+    )
+    effective_speed_kn: Optional[float] = Field(
+        None, description="Speed over ground after current effect, knots"
+    )
+
+    time_score: Optional[float] = Field(None, description="Normalised time cost [0 best, 1 worst]")
+    fuel_score: Optional[float] = Field(None, description="Normalised fuel cost [0 best, 1 worst]")
+    wind_score: Optional[float] = Field(None, description="Normalised wind penalty [0 best, 1 worst]")
+    wave_score: Optional[float] = Field(None, description="Normalised wave penalty [0 best, 1 worst]")
+    current_score: Optional[float] = Field(None, description="Normalised current penalty [0 best, 1 worst]")
+    safety_score: Optional[float] = Field(None, description="Normalised safety margin [0 best, 1 worst]")
+
+    model_config = {"populate_by_name": True}
+
+
 class RoutePreviewResponse(BaseModel):
     """
     Response schema for route preview calculation.
@@ -175,6 +220,10 @@ class RoutePreviewResponse(BaseModel):
     distance_nm: float = Field(..., description="Total route distance in nautical miles")
     estimated_time_hours: float = Field(..., description="Estimated voyage transit duration in hours")
     total_cost: float = Field(..., description="Total multi-objective environmental route cost")
+    legs: List[RouteLegSchema] = Field(
+        default_factory=list,
+        description="Per-segment environmental and cost breakdown explaining the route choice",
+    )
 
 
 class ShipIdentifyRequest(BaseModel):
@@ -271,3 +320,34 @@ class ErrorDetail(BaseModel):
 class ErrorResponse(BaseModel):
     """Standard top-level error response envelope."""
     error: ErrorDetail
+
+
+# Defined after ErrorDetail so the annotation resolves without a forward
+# reference — `from __future__ import annotations` defers evaluation, but
+# Pydantic resolves field types at class construction.
+class PlanJobResponse(BaseModel):
+    """
+    Response for an asynchronous planning job.
+
+    A cold plan costs 75-85s of live Copernicus queries, which no HTTP client
+    should block on. Clients submit a job, then poll until `status` leaves
+    "planning".
+    """
+    job_id: str = Field(..., description="Identifier used to poll for the result")
+    status: str = Field(..., description="'planning' | 'ready' | 'failed'")
+    elapsed_seconds: float = Field(0.0, description="Seconds since the job was submitted")
+    route: Optional[RoutePreviewResponse] = Field(
+        None, description="Populated once status is 'ready'"
+    )
+    error: Optional[ErrorDetail] = Field(
+        None, description="Populated once status is 'failed'"
+    )
+
+
+class ReadinessResponse(BaseModel):
+    """Readiness probe result — reports whether live providers are usable."""
+    status: str = Field(..., description="'ready' or 'degraded'")
+    service: str = Field("naudisha-backend", description="Service identifier")
+    providers: Dict[str, bool] = Field(
+        default_factory=dict, description="Per-provider availability flags"
+    )

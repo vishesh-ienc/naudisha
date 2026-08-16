@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -551,31 +552,44 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
             start_dt = bucket_dt - timedelta(hours=self.temporal_delta_hours)
             end_dt = bucket_dt + timedelta(hours=self.temporal_delta_hours)
 
-            # ONE currents request for the entire bucket
-            df_cur = self._execute_bbox_subset_query(
-                dataset_id=self.currents_dataset_id,
-                variables=["uo", "vo"],
-                lat_min=lat_min,
-                lat_max=lat_max,
-                lon_min=lon_min,
-                lon_max=lon_max,
-                start_dt=start_dt,
-                end_dt=end_dt,
-                depth_level=CMEMS_OCEAN_CURRENTS_SPEC.depth_level,
-            )
-
-            # ONE waves request for the entire bucket
-            df_wav = self._execute_bbox_subset_query(
-                dataset_id=self.waves_dataset_id,
-                variables=["VHM0", "VMDR", "VTPK"],
-                lat_min=lat_min,
-                lat_max=lat_max,
-                lon_min=lon_min,
-                lon_max=lon_max,
-                start_dt=start_dt,
-                end_dt=end_dt,
-                depth_level=None,
-            )
+            # ONE currents + ONE waves request for the entire bucket, issued
+            # concurrently.
+            #
+            # These are independent datasets on the CMEMS side and each takes
+            # ~45s of mostly-network time (metadata resolution, then a zarr/S3
+            # subset). Running them in sequence made a cold route preview cost
+            # ~90s of which half was spent idle. Two threads halve the wall
+            # clock; the GIL is irrelevant here because both calls block on I/O.
+            #
+            # Errors are re-raised from the futures so the existing exception
+            # translation in _execute_bbox_subset_query still governs.
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="cmems") as pool:
+                fut_cur = pool.submit(
+                    self._execute_bbox_subset_query,
+                    dataset_id=self.currents_dataset_id,
+                    variables=["uo", "vo"],
+                    lat_min=lat_min,
+                    lat_max=lat_max,
+                    lon_min=lon_min,
+                    lon_max=lon_max,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    depth_level=CMEMS_OCEAN_CURRENTS_SPEC.depth_level,
+                )
+                fut_wav = pool.submit(
+                    self._execute_bbox_subset_query,
+                    dataset_id=self.waves_dataset_id,
+                    variables=["VHM0", "VMDR", "VTPK"],
+                    lat_min=lat_min,
+                    lat_max=lat_max,
+                    lon_min=lon_min,
+                    lon_max=lon_max,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    depth_level=None,
+                )
+                df_cur = fut_cur.result()
+                df_wav = fut_wav.result()
 
             # Extract nearest value for each requested point from the batch DataFrames
             for req in bucket_requests:

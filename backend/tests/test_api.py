@@ -366,7 +366,15 @@ class TestNauDishaAPI(unittest.TestCase):
             "estimated_time_hours",
             "total_cost",
         }
-        self.assertEqual(set(data.keys()), expected_keys)
+        # Every contract-required key must be present. Additive optional fields
+        # (currently `legs`, the per-segment breakdown that lets a client explain
+        # why a route was chosen) are permitted — a client written against v2
+        # ignores keys it does not know. Asserting exact equality would make any
+        # additive extension a breaking change.
+        self.assertTrue(
+            expected_keys.issubset(set(data.keys())),
+            f"missing contract keys: {expected_keys - set(data.keys())}",
+        )
 
     # -------------------------------------------------------------------------
     # 6. Error Mapping & Service Failures

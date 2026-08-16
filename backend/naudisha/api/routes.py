@@ -24,7 +24,11 @@ from naudisha.api.errors import (
 from naudisha.api.schemas import (
     Coordinate,
     DEFAULT_SHIP_PROFILE_SCHEMA,
+    ErrorDetail,
     HealthResponse,
+    PlanJobResponse,
+    ReadinessResponse,
+    RouteLegSchema,
     RoutePreviewRequest,
     RoutePreviewResponse,
     ShipIdentifyRequest,
@@ -37,6 +41,7 @@ from naudisha.api.schemas import (
     TrackingStopResponse,
     validate_iso_8713_imo,
 )
+from naudisha.api.planning import planning_manager
 from naudisha.api.services import RoutePlanningService
 from naudisha.api.tracking import tracking_manager
 from naudisha.core.models import ShipProfile
@@ -168,15 +173,179 @@ def preview_route(
         for lat, lon in result.route
     ]
 
+    return _to_preview_response(result)
+
+
+def _to_preview_response(result) -> RoutePreviewResponse:
+    """Maps a RoutePlanResult onto the wire schema, including per-leg detail."""
     return RoutePreviewResponse(
         imo_number=result.imo_number,
         status=result.status,
         departure_time=result.departure_time,
         eta=result.eta,
-        route=route_coords,
+        route=[Coordinate(latitude=lat, longitude=lon) for lat, lon in result.route],
         distance_nm=result.distance_nm,
         estimated_time_hours=result.estimated_time_hours,
         total_cost=result.total_cost,
+        legs=[
+            RouteLegSchema(
+                **{"from": Coordinate(latitude=leg.from_lat, longitude=leg.from_lon)},
+                to=Coordinate(latitude=leg.to_lat, longitude=leg.to_lon),
+                distance_nm=leg.distance_nm,
+                travel_time_hours=leg.travel_time_hours,
+                bearing=leg.bearing,
+                cost=leg.cost,
+                wind_speed_kn=leg.wind_speed_kn,
+                wind_direction_deg=leg.wind_direction_deg,
+                wave_height_m=leg.wave_height_m,
+                wave_period_s=leg.wave_period_s,
+                current_speed_kn=leg.current_speed_kn,
+                current_direction_deg=leg.current_direction_deg,
+                relative_wind_dir=leg.relative_wind_dir,
+                relative_current_dir=leg.relative_current_dir,
+                along_track_current_kn=leg.along_track_current_kn,
+                effective_speed_kn=leg.effective_speed_kn,
+                time_score=leg.time_score,
+                fuel_score=leg.fuel_score,
+                wind_score=leg.wind_score,
+                wave_score=leg.wave_score,
+                current_score=leg.current_score,
+                safety_score=leg.safety_score,
+            )
+            for leg in result.legs
+        ],
+    )
+
+
+@api_router.post(
+    "/routes/plan",
+    response_model=PlanJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit Asynchronous Route Plan",
+    description=(
+        "Starts a route planning job and returns immediately. A cold plan costs 75-85s of "
+        "live Copernicus queries, so clients poll GET /api/routes/plan/{job_id} "
+        "instead of holding an HTTP request open."
+    ),
+)
+def submit_route_plan(
+    request: RoutePreviewRequest,
+    service: RoutePlanningService = Depends(get_route_service),
+    vessel_provider: VesselProvider = Depends(get_vessel_provider),
+) -> PlanJobResponse:
+    """Queues a plan and returns a job handle. Identical voyages share one job."""
+    # Explicit particulars are free to use immediately; an IMO lookup is not, so
+    # it is deferred to the worker thread to keep this handler instant.
+    ship_profile = request.ship.to_domain_model() if request.ship is not None else None
+
+    planning_manager.set_route_service(service)
+    signature = planning_manager.signature(
+        imo_number=request.imo_number,
+        start=(request.start.latitude, request.start.longitude),
+        destination=(request.destination.latitude, request.destination.longitude),
+        departure_time=request.departure_time,
+    )
+
+    job = planning_manager.submit(
+        signature,
+        profile_resolver=(
+            (lambda: _resolve_ship_profile(request, vessel_provider))
+            if ship_profile is None and request.imo_number is not None
+            else None
+        ),
+        imo_number=request.imo_number,
+        start_lat=request.start.latitude,
+        start_lon=request.start.longitude,
+        dest_lat=request.destination.latitude,
+        dest_lon=request.destination.longitude,
+        timestamp=request.departure_time,
+        ship_profile=ship_profile,
+    )
+
+    return _job_to_response(job)
+
+
+@api_router.get(
+    "/routes/plan/{job_id}",
+    response_model=PlanJobResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Poll Asynchronous Route Plan",
+    description="Returns the current state of a planning job submitted via POST /api/routes/plan.",
+)
+def get_route_plan(job_id: str = Path(..., description="Job identifier")) -> PlanJobResponse:
+    job = planning_manager.get(job_id)
+    if job is None:
+        raise RouteNotFoundError(f"No planning job found with id '{job_id}'.")
+    return _job_to_response(job)
+
+
+def _job_to_response(job) -> PlanJobResponse:
+    return PlanJobResponse(
+        job_id=job.job_id,
+        status=job.status,
+        elapsed_seconds=round(job.elapsed_seconds, 2),
+        route=_to_preview_response(job.result) if job.result is not None else None,
+        error=(
+            ErrorDetail(code=job.error_code or "INTERNAL_ERROR", message=job.error_message or "Planning failed")
+            if job.status == "failed"
+            else None
+        ),
+    )
+
+
+def _resolve_ship_profile(
+    request: RoutePreviewRequest, vessel_provider: VesselProvider
+) -> Optional[ShipProfile]:
+    """Explicit particulars win; otherwise resolve from IMO, else service default."""
+    if request.ship is not None:
+        return request.ship.to_domain_model()
+
+    if request.imo_number is not None:
+        vessel = vessel_provider.get_vessel_by_imo(request.imo_number)
+        if vessel is not None:
+            return ShipProfile(
+                ship_type=vessel.ship_type,
+                length=vessel.length_m,
+                beam=vessel.beam_m,
+                draft=vessel.draft_m,
+                cruising_speed=vessel.cruising_speed_kn,
+                maximum_speed=vessel.max_speed_kn,
+            )
+
+    return None
+
+
+@health_router.get(
+    "/ready",
+    response_model=ReadinessResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Readiness Probe",
+    description="Reports whether the environmental and vessel providers are configured and usable.",
+)
+def get_ready(
+    service: RoutePlanningService = Depends(get_route_service),
+) -> ReadinessResponse:
+    """
+    Readiness differs from liveness: the process can be up while Copernicus
+    credentials are missing, in which case routes still compute but on fallback
+    conditions rather than live observations. Clients deserve to know which.
+    """
+    import os
+
+    providers = {
+        "environment_provider": service.environment_provider is not None,
+        "copernicus_credentials": bool(
+            os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")
+            and os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD")
+        ),
+        "aisstream_key": bool(os.environ.get("AISSTREAM_API_KEY")),
+    }
+    all_ready = all(providers.values())
+
+    return ReadinessResponse(
+        status="ready" if all_ready else "degraded",
+        service="naudisha-backend",
+        providers=providers,
     )
 
 
