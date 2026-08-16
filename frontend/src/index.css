@@ -1,0 +1,216 @@
+@import 'tailwindcss';
+
+/* Tailwind v4 dark mode: driven by a `.dark` class on <html>, set by ThemeProvider. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  NauDisha design tokens.
+
+  Palette intent: deep-sea navy grounds the UI, with a cyan/aqua accent that reads
+  as "instrumentation" rather than decoration. Semantic names only — components
+  never reference a raw colour, so retheming happens here and nowhere else.
+*/
+:root {
+  --background: oklch(0.98 0.005 240);
+  --foreground: oklch(0.21 0.03 250);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.03 250);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.03 250);
+
+  --primary: oklch(0.52 0.14 235);
+  --primary-foreground: oklch(0.99 0.005 240);
+
+  --secondary: oklch(0.95 0.012 240);
+  --secondary-foreground: oklch(0.28 0.04 250);
+
+  --muted: oklch(0.96 0.008 240);
+  --muted-foreground: oklch(0.52 0.02 250);
+
+  --accent: oklch(0.72 0.13 195);
+  --accent-foreground: oklch(0.18 0.03 250);
+
+  --destructive: oklch(0.58 0.21 27);
+  --destructive-foreground: oklch(0.99 0.005 240);
+
+  --warning: oklch(0.72 0.16 70);
+  --warning-foreground: oklch(0.2 0.03 60);
+
+  --success: oklch(0.62 0.15 155);
+  --success-foreground: oklch(0.99 0.005 240);
+
+  --border: oklch(0.9 0.01 245);
+  --input: oklch(0.9 0.01 245);
+  --ring: oklch(0.52 0.14 235);
+
+  /* Domain-specific: ocean surface behind the map, route line, hazard states. */
+  --ocean: oklch(0.88 0.04 225);
+  --ocean-deep: oklch(0.62 0.09 240);
+  --route: oklch(0.55 0.16 240);
+  --route-updated: oklch(0.68 0.15 195);
+
+  --radius: 0.65rem;
+}
+
+.dark {
+  --background: oklch(0.17 0.025 250);
+  --foreground: oklch(0.95 0.008 240);
+
+  --card: oklch(0.21 0.028 250);
+  --card-foreground: oklch(0.95 0.008 240);
+
+  --popover: oklch(0.21 0.028 250);
+  --popover-foreground: oklch(0.95 0.008 240);
+
+  --primary: oklch(0.68 0.14 225);
+  --primary-foreground: oklch(0.15 0.025 250);
+
+  --secondary: oklch(0.27 0.03 250);
+  --secondary-foreground: oklch(0.95 0.008 240);
+
+  --muted: oklch(0.26 0.025 250);
+  --muted-foreground: oklch(0.68 0.02 245);
+
+  --accent: oklch(0.72 0.14 195);
+  --accent-foreground: oklch(0.15 0.025 250);
+
+  --destructive: oklch(0.63 0.2 25);
+  --destructive-foreground: oklch(0.98 0.005 240);
+
+  --warning: oklch(0.76 0.15 70);
+  --warning-foreground: oklch(0.18 0.03 60);
+
+  --success: oklch(0.68 0.14 155);
+  --success-foreground: oklch(0.15 0.025 250);
+
+  --border: oklch(0.3 0.025 250);
+  --input: oklch(0.32 0.025 250);
+  --ring: oklch(0.68 0.14 225);
+
+  --ocean: oklch(0.28 0.045 245);
+  --ocean-deep: oklch(0.22 0.05 250);
+  --route: oklch(0.7 0.15 225);
+  --route-updated: oklch(0.78 0.14 195);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ocean: var(--ocean);
+  --color-ocean-deep: var(--ocean-deep);
+  --color-route: var(--route);
+  --color-route-updated: var(--route-updated);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: 'Inter var', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    /* Prevents the map/panel layout from bouncing when a scrollbar appears. */
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Theme transition, but never on first paint and never for motion-sensitive users. */
+  .theme-ready *,
+  .theme-ready *::before,
+  .theme-ready *::after {
+    transition:
+      background-color 200ms ease,
+      border-color 200ms ease,
+      color 200ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .theme-ready *,
+    .theme-ready *::before,
+    .theme-ready *::after {
+      transition: none !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  /* Slow horizontal drift used behind hero sections to suggest open water. */
+  @keyframes swell {
+    0%,
+    100% {
+      transform: translateX(0) translateY(0);
+    }
+    50% {
+      transform: translateX(-12px) translateY(-6px);
+    }
+  }
+  .animate-swell {
+    animation: swell 9s ease-in-out infinite;
+  }
+
+  @keyframes pulse-ring {
+    0% {
+      transform: scale(0.85);
+      opacity: 0.7;
+    }
+    70% {
+      transform: scale(1.6);
+      opacity: 0;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  .animate-pulse-ring {
+    animation: pulse-ring 2.2s cubic-bezier(0.24, 0.6, 0.35, 1) infinite;
+  }
+}
