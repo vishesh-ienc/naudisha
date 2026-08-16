@@ -436,7 +436,7 @@ class TestNauDishaAPI(unittest.TestCase):
     # -------------------------------------------------------------------------
 
     def test_18_ship_identify_endpoint_includes_ship_block(self) -> None:
-        """18. POST /api/ships returns ship profile block conforming to contract v2 §4."""
+        """18. POST /api/ships returns real ship profile block conforming to contract v2 §4."""
         payload = {"imo_number": "1234567"}
         response = self.client.post("/api/ships", json=payload)
         self.assertEqual(response.status_code, 200)
@@ -452,6 +452,33 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertEqual(data["ship"]["draft_m"], 12.0)
         self.assertEqual(data["ship"]["cruising_speed_kn"], 18.0)
         self.assertEqual(data["ship"]["max_speed_kn"], 23.0)
+
+    def test_18b_ship_identify_real_vessels(self) -> None:
+        """18b. POST /api/ships returns real vessel records for real IMO numbers."""
+        # Test Courage (Vehicle Carrier)
+        res_courage = self.client.post("/api/ships", json={"imo_number": "9176187"})
+        self.assertEqual(res_courage.status_code, 200)
+        data_courage = res_courage.json()
+        self.assertEqual(data_courage["name"], "Courage")
+        self.assertEqual(data_courage["ship"]["ship_type"], "Vehicles Carrier")
+        self.assertEqual(data_courage["ship"]["length_m"], 199.9)
+        self.assertEqual(data_courage["ship"]["draft_m"], 8.8)
+
+        # Test Ever Given (Container Ship)
+        res_eg = self.client.post("/api/ships", json={"imo_number": "9811000"})
+        self.assertEqual(res_eg.status_code, 200)
+        data_eg = res_eg.json()
+        self.assertEqual(data_eg["name"], "Ever Given")
+        self.assertEqual(data_eg["ship"]["length_m"], 399.9)
+        self.assertEqual(data_eg["ship"]["beam_m"], 58.8)
+
+    def test_18c_ship_identify_unknown_vessel_returns_404(self) -> None:
+        """18c. POST /api/ships returns 404 SHIP_NOT_FOUND when IMO is not in provider records."""
+        # Valid ISO 8713 IMO but not in registry
+        res_unknown = self.client.post("/api/ships", json={"imo_number": "9074729"})
+        self.assertEqual(res_unknown.status_code, 404)
+        data = res_unknown.json()
+        self.assertEqual(data["error"]["code"], "SHIP_NOT_FOUND")
 
     def test_19_tracking_start_endpoint(self) -> None:
         """19. POST /api/ships/{imo}/tracking/start accepts destination body and returns confirmation."""

@@ -1,8 +1,8 @@
 """
-Marine and weather data acquisition module.
+Marine, weather, and vessel data acquisition module.
 Provides abstract provider interfaces, Copernicus Marine Service provider,
 Open-Meteo atmospheric wind provider, composite data fusion provider,
-dataset specifications, and vector conversion utilities.
+vessel registry providers, and vector conversion utilities.
 """
 
 from naudisha.data.weather_provider import (
@@ -37,6 +37,14 @@ from naudisha.data.wind_provider import (
 from naudisha.data.composite_provider import (
     CompositeEnvironmentalProvider,
 )
+from naudisha.data.vessel_provider import (
+    VesselRecord,
+    VesselProvider,
+    RegistryVesselProvider,
+    CompositeVesselProvider,
+    MockVesselProvider,
+    GLOBAL_VESSEL_REGISTRY,
+)
 
 __all__ = [
     "WeatherProvider",
@@ -53,6 +61,12 @@ __all__ = [
     "WindDataUnavailableError",
     "WindResponseMalformedError",
     "CompositeEnvironmentalProvider",
+    "VesselRecord",
+    "VesselProvider",
+    "RegistryVesselProvider",
+    "CompositeVesselProvider",
+    "MockVesselProvider",
+    "GLOBAL_VESSEL_REGISTRY",
     "CopernicusDatasetSpec",
     "CMEMS_OCEAN_CURRENTS_SPEC",
     "CMEMS_SURFACE_CURRENTS_HOURLY_SPEC",

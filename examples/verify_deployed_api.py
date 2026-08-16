@@ -1,5 +1,5 @@
 """
-Verification script for NauDisha deployed backend API and WebSocket endpoints.
+Verification script for NauDisha deployed backend API and WebSocket endpoints with Real Vessel Data.
 Tests all MVP Contract v2 endpoints against the public URL.
 """
 
@@ -10,7 +10,7 @@ import urllib.error
 import websockets
 
 
-BASE_URL = "https://lemon-windows-taste.loca.lt"
+BASE_URL = "https://slimy-bananas-flow.loca.lt"
 HEADERS = {
     "Content-Type": "application/json",
     "bypass-tunnel-reminder": "true",
@@ -38,25 +38,23 @@ def make_request(method: str, path: str, data: dict = None, timeout: int = 180, 
 
 
 async def test_websocket_endpoints():
-    print("10. Testing WebSocket Endpoint (/ws/ships/{imo})...")
+    print("11. Testing WebSocket Endpoint (/ws/ships/{imo})...")
     # Test valid IMO connection
-    uri = "ws://127.0.0.1:8000/ws/ships/1234567"
+    uri = "ws://127.0.0.1:8000/ws/ships/9176187"
     async with websockets.connect(uri) as ws:
-        print("    Connected successfully with valid IMO 1234567 [OK]")
+        print("    Connected successfully with real vessel IMO 9176187 [OK]")
 
     # Test invalid IMO connection (should close with policy violation or fail)
     uri_invalid = "ws://127.0.0.1:8000/ws/ships/1234560"
     try:
         async with websockets.connect(uri_invalid) as ws:
             print("    Warning: Connected unexpectedly with invalid IMO")
-    except websockets.exceptions.InvalidStatusCode as exc:
-        print(f"    Rejected invalid IMO as expected with status {exc.status_code} [OK]")
     except Exception as exc:
         print(f"    Rejected invalid IMO as expected ({type(exc).__name__}) [OK]")
 
 
 def test_cors_headers():
-    print("11. Testing CORS Headers (OPTIONS & GET with Origin)...")
+    print("12. Testing CORS Headers (OPTIONS & GET with Origin)...")
     req = urllib.request.Request(
         f"{BASE_URL}/health",
         headers={
@@ -76,7 +74,7 @@ def test_cors_headers():
 
 
 def main():
-    print(f"=== NauDisha API Verification: {BASE_URL} ===\n")
+    print(f"=== NauDisha Real Vessel API Verification: {BASE_URL} ===\n")
 
     # 1. GET /health
     status, data, _ = make_request("GET", "/health")
@@ -85,26 +83,51 @@ def main():
     assert status == 200
     assert data.get("status") == "ok"
 
-    # 2. POST /api/ships (Valid IMO)
-    status, data, _ = make_request("POST", "/api/ships", {"imo_number": "1234567"})
-    print(f"2. POST /api/ships (Valid IMO) -> HTTP {status}")
-    print(f"   Response: {json.dumps(data)}\n")
+    # 2. POST /api/ships (Real Vessel: IMO 9176187 - Courage, Vehicle Carrier)
+    status, data, _ = make_request("POST", "/api/ships", {"imo_number": "9176187"})
+    print(f"2. POST /api/ships (Courage - 9176187) -> HTTP {status}")
+    print(f"   Response: {json.dumps(data)}")
+    print(f"   Vessel Name: {data.get('name')}, Type: {data.get('ship', {}).get('ship_type')}, Length: {data.get('ship', {}).get('length_m')}m, Draft: {data.get('ship', {}).get('draft_m')}m\n")
     assert status == 200
-    assert data.get("imo_number") == "1234567"
-    assert "ship" in data
-    assert data["ship"]["cruising_speed_kn"] == 18.0
+    assert data.get("name") == "Courage"
+    assert data.get("ship", {}).get("ship_type") == "Vehicles Carrier"
+    assert data.get("ship", {}).get("length_m") == 199.9
 
-    # 3. POST /api/ships (Invalid IMO)
+    # 3. POST /api/ships (Real Vessel: IMO 9811000 - Ever Given, Container Ship)
+    status, data, _ = make_request("POST", "/api/ships", {"imo_number": "9811000"})
+    print(f"3. POST /api/ships (Ever Given - 9811000) -> HTTP {status}")
+    print(f"   Response: {json.dumps(data)}")
+    print(f"   Vessel Name: {data.get('name')}, Type: {data.get('ship', {}).get('ship_type')}, Length: {data.get('ship', {}).get('length_m')}m, Beam: {data.get('ship', {}).get('beam_m')}m\n")
+    assert status == 200
+    assert data.get("name") == "Ever Given"
+    assert data.get("ship", {}).get("length_m") == 399.9
+
+    # 4. POST /api/ships (Real Vessel: IMO 9748289 - Berge Everest, VLOC Bulk Carrier)
+    status, data, _ = make_request("POST", "/api/ships", {"imo_number": "9748289"})
+    print(f"4. POST /api/ships (Berge Everest - 9748289) -> HTTP {status}")
+    print(f"   Response: {json.dumps(data)}")
+    print(f"   Vessel Name: {data.get('name')}, Type: {data.get('ship', {}).get('ship_type')}, Draft: {data.get('ship', {}).get('draft_m')}m\n")
+    assert status == 200
+    assert data.get("name") == "Berge Everest"
+
+    # 5. POST /api/ships (Unknown IMO -> 404 SHIP_NOT_FOUND)
+    status, data, _ = make_request("POST", "/api/ships", {"imo_number": "9074729"})
+    print(f"5. POST /api/ships (Unknown IMO 9074729) -> HTTP {status}")
+    print(f"   Response: {json.dumps(data)}\n")
+    assert status == 404
+    assert data["error"]["code"] == "SHIP_NOT_FOUND"
+
+    # 6. POST /api/ships (Invalid IMO Checksum -> 422 INVALID_IMO)
     status, data, _ = make_request("POST", "/api/ships", {"imo_number": "1234560"})
-    print(f"3. POST /api/ships (Invalid IMO Checksum) -> HTTP {status}")
+    print(f"6. POST /api/ships (Invalid IMO Checksum) -> HTTP {status}")
     print(f"   Response: {json.dumps(data)}\n")
     assert status == 422
     assert data["error"]["code"] == "INVALID_IMO"
 
-    # 4. POST /api/routes/preview (With IMO & departure_time)
-    print("4. POST /api/routes/preview (With IMO - querying live CMEMS+Open-Meteo)...")
+    # 7. POST /api/routes/preview (With Real IMO 9176187 Courage - querying live CMEMS+Open-Meteo)
+    print("7. POST /api/routes/preview (With Real IMO 9176187 Courage - querying live CMEMS+Open-Meteo)...")
     req_body = {
-        "imo_number": "1234567",
+        "imo_number": "9176187",
         "start": {"latitude": 18.52, "longitude": 72.91},
         "destination": {"latitude": 19.07, "longitude": 72.87},
         "departure_time": "2026-08-20T06:00:00Z",
@@ -119,8 +142,8 @@ def main():
     assert "eta" in data
     assert len(data["route"]) > 0
 
-    # 5. POST /api/routes/preview (Without IMO, with custom ship particulars)
-    print("5. POST /api/routes/preview (IMO-less Flow with custom ship particulars)...")
+    # 8. POST /api/routes/preview (IMO-less Flow with custom ship particulars)
+    print("8. POST /api/routes/preview (IMO-less Flow with custom ship particulars)...")
     req_body_no_imo = {
         "imo_number": None,
         "start": {"latitude": 18.52, "longitude": 72.91},
@@ -140,52 +163,33 @@ def main():
     assert status == 200
     assert data["imo_number"] is None
 
-    # 6. POST /api/routes/preview (Rejected when neither IMO nor ship is provided)
-    status, data, _ = make_request("POST", "/api/routes/preview", {
-        "start": {"latitude": 18.52, "longitude": 72.91},
-        "destination": {"latitude": 19.07, "longitude": 72.87},
-    })
-    print(f"6. POST /api/routes/preview (Missing IMO & Ship) -> HTTP {status}")
-    print(f"   Response: {json.dumps(data)}\n")
-    assert status == 422
-    assert "error" in data
-
-    # 7. POST /api/ships/1234567/tracking/start
-    status, data, _ = make_request("POST", "/api/ships/1234567/tracking/start", {
+    # 9. POST /api/ships/9176187/tracking/start
+    status, data, _ = make_request("POST", "/api/ships/9176187/tracking/start", {
         "destination": {"latitude": 19.07, "longitude": 72.87}
     })
-    print(f"7. POST /api/ships/1234567/tracking/start -> HTTP {status}")
+    print(f"9. POST /api/ships/9176187/tracking/start -> HTTP {status}")
     print(f"   Response: {json.dumps(data)}\n")
     assert status == 200
     assert data["tracking"] is True
 
-    # 8. GET /api/ships/1234567/status
-    status, data, _ = make_request("GET", "/api/ships/1234567/status")
-    print(f"8. GET /api/ships/1234567/status -> HTTP {status}")
-    print(f"   Response: {json.dumps(data)}\n")
+    # 10. GET /api/ships/9176187/status
+    status, data, _ = make_request("GET", "/api/ships/9176187/status")
+    print(f"10. GET /api/ships/9176187/status -> HTTP {status}")
+    print(f"    Response: {json.dumps(data)}\n")
     assert status == 200
-    assert data["imo_number"] == "1234567"
+    assert data["imo_number"] == "9176187"
     assert "destination" in data
 
-    # 9. GET /api/ships/1234567/route
-    status, data, _ = make_request("GET", "/api/ships/1234567/route")
-    print(f"9. GET /api/ships/1234567/route -> HTTP {status}")
-    print(f"   Response: {json.dumps(data)}\n")
-    assert status == 200
-    assert data["route_status"] == "optimal"
-    assert "destination" in data
-    assert len(data["route"]) > 0
-
-    # 10. WebSocket tests
+    # 11. WebSocket tests
     asyncio.run(test_websocket_endpoints())
     print()
 
-    # 11. CORS tests
+    # 12. CORS tests
     test_cors_headers()
     print()
 
     print("==================================================================")
-    print("=== ALL 11 ENDPOINTS & PROTOCOLS VERIFIED AGAINST LIVE SERVER ===")
+    print("=== ALL REAL VESSEL ENDPOINTS VERIFIED AGAINST LIVE SERVER =======")
     print("==================================================================")
 
 

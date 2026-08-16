@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, Path, WebSocket, WebSocketDisconnect, status
 
-from naudisha.api.errors import InvalidIMOError
+from naudisha.api.errors import InvalidIMOError, ShipNotFoundError
 from naudisha.api.schemas import (
     Coordinate,
     DEFAULT_SHIP_PROFILE_SCHEMA,
@@ -19,6 +19,7 @@ from naudisha.api.schemas import (
     RoutePreviewResponse,
     ShipIdentifyRequest,
     ShipResponse,
+    ShipProfileSchema,
     ShipRouteResponse,
     ShipStatusResponse,
     TrackingStartRequest,
@@ -26,13 +27,16 @@ from naudisha.api.schemas import (
     validate_iso_8713_imo,
 )
 from naudisha.api.services import RoutePlanningService
+from naudisha.core.models import ShipProfile
+from naudisha.data.vessel_provider import CompositeVesselProvider, VesselProvider
 
 # -----------------------------------------------------------------------------
 # Dependency Injection
 # -----------------------------------------------------------------------------
 
-# Singleton default instance (can be overridden per test)
+# Singleton default instances (can be overridden per test)
 _default_route_service: Optional[RoutePlanningService] = None
+_default_vessel_provider: Optional[VesselProvider] = None
 
 
 def get_route_service() -> RoutePlanningService:
@@ -41,6 +45,14 @@ def get_route_service() -> RoutePlanningService:
     if _default_route_service is None:
         _default_route_service = RoutePlanningService()
     return _default_route_service
+
+
+def get_vessel_provider() -> VesselProvider:
+    """Dependency provider for VesselProvider."""
+    global _default_vessel_provider
+    if _default_vessel_provider is None:
+        _default_vessel_provider = CompositeVesselProvider()
+    return _default_vessel_provider
 
 
 # -----------------------------------------------------------------------------
@@ -74,12 +86,29 @@ def get_health() -> HealthResponse:
 def preview_route(
     request: RoutePreviewRequest,
     service: RoutePlanningService = Depends(get_route_service),
+    vessel_provider: VesselProvider = Depends(get_vessel_provider),
 ) -> RoutePreviewResponse:
     """
     Calculates an optimal route for a given IMO vessel and geographic coordinates.
     Follows docs/API_CONTRACT.md (v2) schema conventions.
     """
-    ship_profile = request.ship.to_domain_model() if request.ship is not None else None
+    ship_profile: Optional[ShipProfile] = None
+
+    if request.ship is not None:
+        ship_profile = request.ship.to_domain_model()
+    elif request.imo_number is not None:
+        vessel = vessel_provider.get_vessel_by_imo(request.imo_number)
+        if vessel is not None:
+            ship_profile = ShipProfile(
+                ship_type=vessel.ship_type,
+                length=vessel.length_m,
+                beam=vessel.beam_m,
+                draft=vessel.draft_m,
+                cruising_speed=vessel.cruising_speed_kn,
+                maximum_speed=vessel.max_speed_kn,
+            )
+        else:
+            ship_profile = None  # Falls back to service default ship profile
 
     result = service.plan_preview_route(
         imo_number=request.imo_number,
@@ -113,18 +142,38 @@ def preview_route(
     response_model=ShipResponse,
     status_code=status.HTTP_200_OK,
     summary="Create or Identify Ship",
-    description="Identifies a vessel by IMO number for tracking or route planning.",
+    description="Identifies a vessel by IMO number using real maritime data.",
 )
 def identify_ship(
     request: ShipIdentifyRequest,
+    vessel_provider: VesselProvider = Depends(get_vessel_provider),
 ) -> ShipResponse:
-    """MVP demo vessel identification endpoint."""
+    """Real vessel identification endpoint querying maritime records."""
+    vessel = vessel_provider.get_vessel_by_imo(request.imo_number)
+    if vessel is None:
+        raise ShipNotFoundError(f"No ship found for IMO number '{request.imo_number}'.")
+
+    position = (
+        Coordinate(latitude=vessel.position_lat, longitude=vessel.position_lon)
+        if vessel.position_lat is not None and vessel.position_lon is not None
+        else None
+    )
+
+    ship_profile = ShipProfileSchema(
+        ship_type=vessel.ship_type,
+        length_m=vessel.length_m,
+        beam_m=vessel.beam_m,
+        draft_m=vessel.draft_m,
+        cruising_speed_kn=vessel.cruising_speed_kn,
+        max_speed_kn=vessel.max_speed_kn,
+    )
+
     return ShipResponse(
-        imo_number=request.imo_number,
-        name="Demo Vessel",
-        status="underway",
-        position=Coordinate(latitude=18.52, longitude=72.91),
-        ship=DEFAULT_SHIP_PROFILE_SCHEMA,
+        imo_number=vessel.imo_number,
+        name=vessel.name,
+        status=vessel.status,
+        position=position,
+        ship=ship_profile,
     )
 
 
@@ -138,12 +187,17 @@ def identify_ship(
 def start_tracking(
     request: TrackingStartRequest,
     imo_number: str = Path(..., description="7-digit IMO number"),
+    vessel_provider: VesselProvider = Depends(get_vessel_provider),
 ) -> TrackingStartResponse:
     """MVP demo tracking start endpoint."""
     try:
         validate_iso_8713_imo(imo_number)
     except ValueError as exc:
         raise InvalidIMOError(str(exc)) from exc
+
+    vessel = vessel_provider.get_vessel_by_imo(imo_number)
+    if vessel is None:
+        raise ShipNotFoundError(f"No ship found for IMO number '{imo_number}'.")
 
     return TrackingStartResponse(
         imo_number=imo_number,
@@ -161,6 +215,7 @@ def start_tracking(
 )
 def get_ship_status(
     imo_number: str = Path(..., description="7-digit IMO number"),
+    vessel_provider: VesselProvider = Depends(get_vessel_provider),
 ) -> ShipStatusResponse:
     """MVP demo vessel status query endpoint."""
     try:
@@ -168,11 +223,18 @@ def get_ship_status(
     except ValueError as exc:
         raise InvalidIMOError(str(exc)) from exc
 
+    vessel = vessel_provider.get_vessel_by_imo(imo_number)
+    if vessel is None:
+        raise ShipNotFoundError(f"No ship found for IMO number '{imo_number}'.")
+
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pos_lat = vessel.position_lat if vessel.position_lat is not None else 18.58
+    pos_lon = vessel.position_lon if vessel.position_lon is not None else 72.94
+
     return ShipStatusResponse(
         imo_number=imo_number,
-        status="underway",
-        position=Coordinate(latitude=18.58, longitude=72.94),
+        status=vessel.status,
+        position=Coordinate(latitude=pos_lat, longitude=pos_lon),
         destination=Coordinate(latitude=19.07, longitude=72.87),
         timestamp=now_iso,
     )
@@ -187,6 +249,7 @@ def get_ship_status(
 )
 def get_ship_route(
     imo_number: str = Path(..., description="7-digit IMO number"),
+    vessel_provider: VesselProvider = Depends(get_vessel_provider),
 ) -> ShipRouteResponse:
     """MVP demo vessel route query endpoint."""
     try:
@@ -194,14 +257,21 @@ def get_ship_route(
     except ValueError as exc:
         raise InvalidIMOError(str(exc)) from exc
 
+    vessel = vessel_provider.get_vessel_by_imo(imo_number)
+    if vessel is None:
+        raise ShipNotFoundError(f"No ship found for IMO number '{imo_number}'.")
+
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pos_lat = vessel.position_lat if vessel.position_lat is not None else 18.58
+    pos_lon = vessel.position_lon if vessel.position_lon is not None else 72.94
+
     return ShipRouteResponse(
         imo_number=imo_number,
         route_status="optimal",
         destination=Coordinate(latitude=19.07, longitude=72.87),
         route=[
-            Coordinate(latitude=18.58, longitude=72.94),
-            Coordinate(latitude=18.75, longitude=72.91),
+            Coordinate(latitude=pos_lat, longitude=pos_lon),
+            Coordinate(latitude=round(pos_lat + 0.17, 2), longitude=round(pos_lon - 0.03, 2)),
             Coordinate(latitude=19.07, longitude=72.87),
         ],
         distance_nm=110.42,

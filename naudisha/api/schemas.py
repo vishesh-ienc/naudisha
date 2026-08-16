@@ -190,9 +190,9 @@ class ShipIdentifyRequest(BaseModel):
 class ShipResponse(BaseModel):
     """Ship status response schema."""
     imo_number: str
-    name: str = "Demo Vessel"
+    name: str
     status: str = "underway"  # "underway", "stopped", "unknown"
-    position: Coordinate
+    position: Optional[Coordinate] = None
     ship: ShipProfileSchema
 
 
