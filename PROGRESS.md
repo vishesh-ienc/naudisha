@@ -437,9 +437,43 @@ Requests are grouped by hour-bucket (`strftime("%Y-%m-%dT%H")`). Each bucket pro
     16. `POST /api/ships` identification endpoint verification.
   - **Test count progression**: 122 → **138** (16 new, 0 regressions).
 
+### Phase 8.2: Live Environmental Route Planning ✅ (Complete)
+**Status**: Completed (Branch: `feature/backend-api`)
+
+- **Live Environmental Pipeline Integration**:
+  - Connected `RoutePlanningService` to `CompositeEnvironmentalProvider` (Copernicus Marine hydrodynamic currents & waves + Open-Meteo atmospheric wind).
+  - Uses the Phase 7.5 **`BatchCapableProvider`** pipeline: queries the bounding box across all edge midpoints via CMEMS subset and deduplicated Open-Meteo cells, avoiding per-edge latency.
+  - Generates a dynamic geographic navigation grid (`GeographicGridGraph`) covering the departure and destination coordinates with configurable resolution (`grid_resolution_deg = 0.25` ~ 15 NM) and protective margins.
+  - Automatically executes D* Lite pathfinding and extracts voyage metrics (total distance in NM, estimated transit hours, and multi-factor environmental cost).
+
+- **API Adherence & Response Output**:
+  - `POST /api/routes/preview` emits strictly compliant JSON conforming to [`docs/API_CONTRACT.md`](file:///c:/Users/VISHESH/Desktop/naudisha/docs/API_CONTRACT.md):
+    - `imo_number`, `status: "route_ready"`, `route: [{"latitude": ..., "longitude": ...}, ...]`, `distance_nm`, `estimated_time_hours`, `total_cost`.
+  - Zero exposure of D* Lite internal heuristics, priority keys, or internal node identifiers.
+
+- **Live Integration Demo (`examples/run_live_api_route_demo.py`)**:
+  - **Voyage**: Offshore Arabian Sea `(18.00°N, 71.00°E)` to Mumbai Approach `(19.00°N, 72.00°E)`.
+  - **Live CMEMS Datasets**: `cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i` + `cmems_mod_glo_wav_anfc_0.083deg_PT3H-i`.
+  - **Live Open-Meteo**: 10-meter surface wind vector grid.
+  - **Route Result**: 9 waypoints, **117.14 NM**, **6.48 hours** transit (~0.27 days), accumulated cost: **19.96**.
+  - **Execution Time**: **89.70 seconds** (including remote CMEMS batch download + Open-Meteo fusion + D* Lite planning).
+
+- **Confirmation of Unchanged Routing Core**:
+  - **Zero modifications** to D* Lite algorithm (`naudisha/routing/dstar_lite.py`).
+  - **Zero modifications** to GeographicGridGraph routing mathematics (`naudisha/routing/graph.py`).
+  - **Zero modifications** to CostModel formulas and scorers (`naudisha/cost/`).
+  - **Zero modifications** to Copernicus and Open-Meteo conversion mathematics (`naudisha/data/`).
+
+- **Test Results (141/141 Unit Tests Passing — Zero Regressions)**:
+  - Added 3 new tests in [`tests/test_api.py`](file:///c:/Users/VISHESH/Desktop/naudisha/tests/test_api.py):
+    17. `test_17_service_uses_batch_capable_provider_pipeline` — verifies batch call count and midpoint propagation.
+    18. `test_18_default_provider_is_composite_environmental_provider` — verifies default provider instantiation.
+    19. `test_19_bounding_grid_covers_corridor_with_margin` — verifies geographic boundary margin calculations.
+  - **Test count progression**: 138 → **141** (3 new, 0 regressions).
+
 ---
 
-### Phase 8.2: Live Ship Tracking & WebSocket Updates (Upcoming) ⏳
+### Phase 8.3: Live Ship Tracking & WebSocket Updates (Upcoming) ⏳
 - Implementation of ship tracking lifecycle endpoints (`POST /api/ships/{imo_number}/tracking/start`, `GET /api/ships/{imo_number}/status`, `GET /api/ships/{imo_number}/route`).
 - WebSocket server endpoint (`/ws/ships/{imo_number}`) for real-time route update broadcasts and position updates.
 - Simulated demo mode generator for dynamic environmental changes and vessel movement.

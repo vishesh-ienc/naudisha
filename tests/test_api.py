@@ -1,8 +1,9 @@
 """
 Offline Unit & Integration Tests for NauDisha Backend API & Service Layer.
-Strictly validates adherence to docs/API_CONTRACT.md without external network calls.
+Strictly validates adherence to docs/API_CONTRACT.md and Phase 8.2 batch environmental routing.
 """
 
+from typing import Dict, Sequence
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -19,11 +20,12 @@ from naudisha.api.errors import (
     RouteNotFoundError,
 )
 from naudisha.core.models import EnvironmentalData, ShipProfile, CostWeights
-from naudisha.data.weather_provider import WeatherProvider
+from naudisha.data.composite_provider import CompositeEnvironmentalProvider
+from naudisha.data.weather_provider import WeatherProvider, BatchCapableProvider, ConditionRequest
 
 
 class DummyWeatherProvider(WeatherProvider):
-    """Deterministic offline weather provider for test isolation."""
+    """Deterministic offline single-point weather provider for test isolation."""
 
     def __init__(self, current_speed: float = 0.5, wave_height: float = 1.2, wind_speed: float = 12.0) -> None:
         self.current_speed = current_speed
@@ -43,11 +45,57 @@ class DummyWeatherProvider(WeatherProvider):
         )
 
 
+class MockBatchWeatherProvider(WeatherProvider, BatchCapableProvider):
+    """Deterministic offline batch provider tracking batch call counts and midpoint requests."""
+
+    def __init__(self) -> None:
+        self.batch_call_count = 0
+        self.last_requests: Sequence[ConditionRequest] = []
+
+    def fetch_conditions(self, lat: float, lon: float, timestamp: str) -> EnvironmentalData:
+        return EnvironmentalData(
+            timestamp=timestamp,
+            current_speed=0.5,
+            current_direction=120.0,
+            wave_height=1.2,
+            wave_direction=240.0,
+            wave_period=7.5,
+            wind_speed=12.0,
+            wind_direction=260.0,
+        )
+
+    def fetch_conditions_batch(
+        self, requests: Sequence[ConditionRequest]
+    ) -> Dict[ConditionRequest, EnvironmentalData]:
+        self.batch_call_count += 1
+        self.last_requests = requests
+        return {
+            req: EnvironmentalData(
+                timestamp=req.timestamp,
+                current_speed=0.4,
+                current_direction=110.0,
+                wave_height=1.1,
+                wave_direction=230.0,
+                wave_period=7.0,
+                wind_speed=14.0,
+                wind_direction=250.0,
+            )
+            for req in requests
+        }
+
+
 class TestNauDishaAPI(unittest.TestCase):
     """Test suite for FastAPI endpoints and error format compliance."""
 
     def setUp(self) -> None:
+        # Default test client with offline mock provider
+        self.mock_provider = MockBatchWeatherProvider()
+        self.offline_service = RoutePlanningService(environment_provider=self.mock_provider)
+        app.dependency_overrides[get_route_service] = lambda: self.offline_service
         self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
 
     # -------------------------------------------------------------------------
     # 1. Health Endpoint Tests
@@ -314,7 +362,7 @@ class TestNauDishaAPI(unittest.TestCase):
 
     def test_14_service_direct_planning(self) -> None:
         """14. Direct invocation of RoutePlanningService produces valid RoutePlanResult."""
-        service = RoutePlanningService()
+        service = RoutePlanningService(environment_provider=self.mock_provider)
         result = service.plan_preview_route(
             imo_number="1234567",
             start_lat=18.52,
@@ -331,7 +379,7 @@ class TestNauDishaAPI(unittest.TestCase):
 
     def test_15_service_same_start_and_destination(self) -> None:
         """15. Direct invocation with identical start and destination coordinates returns 0 cost/distance."""
-        service = RoutePlanningService()
+        service = RoutePlanningService(environment_provider=self.mock_provider)
         result = service.plan_preview_route(
             imo_number="1234567",
             start_lat=18.52,
@@ -360,6 +408,53 @@ class TestNauDishaAPI(unittest.TestCase):
         self.assertIn("position", data)
         self.assertIn("latitude", data["position"])
         self.assertIn("longitude", data["position"])
+
+    # -------------------------------------------------------------------------
+    # 11. Phase 8.2 Live Batch Integration Tests
+    # -------------------------------------------------------------------------
+
+    def test_17_service_uses_batch_capable_provider_pipeline(self) -> None:
+        """17. Route planning service utilizes the batch environmental pipeline for graph population."""
+        batch_provider = MockBatchWeatherProvider()
+        service = RoutePlanningService(environment_provider=batch_provider)
+
+        result = service.plan_preview_route(
+            imo_number="7654321",
+            start_lat=18.0,
+            start_lon=71.0,
+            dest_lat=18.8,
+            dest_lon=71.8,
+        )
+
+        self.assertIsInstance(result, RoutePlanResult)
+        self.assertEqual(result.imo_number, "7654321")
+        self.assertEqual(result.status, "route_ready")
+        self.assertGreater(len(result.route), 1)
+        self.assertGreater(result.distance_nm, 0.0)
+        self.assertGreater(result.total_cost, 0.0)
+
+        # Confirm that BatchCapableProvider was used and received all edge midpoints
+        self.assertEqual(batch_provider.batch_call_count, 1)
+        self.assertGreater(len(batch_provider.last_requests), 0)
+
+    def test_18_default_provider_is_composite_environmental_provider(self) -> None:
+        """18. Default RoutePlanningService initializes CompositeEnvironmentalProvider as provider."""
+        service = RoutePlanningService()
+        self.assertIsInstance(service.environment_provider, CompositeEnvironmentalProvider)
+
+    def test_19_bounding_grid_covers_corridor_with_margin(self) -> None:
+        """19. Dynamic grid builder wraps origin/bounds properly covering departure and destination."""
+        service = RoutePlanningService(environment_provider=self.mock_provider)
+        graph = service._build_bounding_grid(start_lat=18.2, start_lon=71.1, dest_lat=18.9, dest_lon=71.9)
+
+        # Verify bounds encompass start and dest
+        self.assertLessEqual(graph.config.origin_lat, 18.2)
+        self.assertLessEqual(graph.config.origin_lon, 71.1)
+
+        max_lat = graph.config.origin_lat + (graph.config.rows - 1) * graph.config.lat_spacing
+        max_lon = graph.config.origin_lon + (graph.config.cols - 1) * graph.config.lon_spacing
+        self.assertGreaterEqual(max_lat, 18.9)
+        self.assertGreaterEqual(max_lon, 71.9)
 
 
 if __name__ == "__main__":

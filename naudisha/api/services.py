@@ -1,7 +1,7 @@
 """
 Route Planning Service layer.
 Acts as a decoupled adapter between API requests and the NauDisha routing engine
-(GeographicGridGraph, CostModel, WeatherProvider, DStarLite).
+(GeographicGridGraph, CostModel, CompositeEnvironmentalProvider, DStarLite).
 Strictly contains NO routing mathematics or D* Lite internals.
 """
 
@@ -19,6 +19,7 @@ from naudisha.core.models import (
     ShipProfile,
 )
 from naudisha.cost.model import CostModel
+from naudisha.data.composite_provider import CompositeEnvironmentalProvider
 from naudisha.data.weather_provider import WeatherProvider
 from naudisha.routing.dstar_lite import DStarLite
 from naudisha.routing.graph import (
@@ -60,8 +61,23 @@ class RoutePlanningService:
         cost_model: Optional[CostModel] = None,
         default_weights: Optional[CostWeights] = None,
         graph_factory: Optional[Callable[[float, float, float, float], GeographicGridGraph]] = None,
+        grid_resolution_deg: float = 0.25,
     ) -> None:
-        self.environment_provider = environment_provider
+        """
+        Initializes the route planning service.
+
+        Args:
+            environment_provider: Optional meteorological/hydrodynamic data provider.
+                Defaults to CompositeEnvironmentalProvider (live CMEMS currents/waves + Open-Meteo wind).
+            ship_profile: Optional vessel parameters (defaults to Panamax container ship).
+            cost_model: Optional CostModel instance.
+            default_weights: Optional multi-objective cost weights.
+            graph_factory: Optional custom grid factory for test injection.
+            grid_resolution_deg: Default grid spatial resolution in degrees (default: 0.25 deg ~ 15 NM).
+        """
+        self.environment_provider = (
+            environment_provider if environment_provider is not None else CompositeEnvironmentalProvider()
+        )
         self.ship_profile = ship_profile or ShipProfile(
             ship_type="Container Vessel (Panamax)",
             length=294.0,
@@ -70,9 +86,17 @@ class RoutePlanningService:
             cruising_speed=18.0,
             maximum_speed=23.0,
         )
-        self.default_weights = default_weights or CostWeights()
+        self.default_weights = default_weights or CostWeights(
+            time=1.5,
+            fuel=1.2,
+            wind=1.0,
+            wave=1.0,
+            current=0.8,
+            safety=2.0,
+        )
         self.cost_model = cost_model or CostModel(default_weights=self.default_weights)
         self.graph_factory = graph_factory
+        self.grid_resolution_deg = grid_resolution_deg
 
     def plan_preview_route(
         self,
@@ -102,7 +126,7 @@ class RoutePlanningService:
             EnvironmentUnavailableError: If environmental data provider fails.
             RouteNotFoundError: If no navigable route exists.
         """
-        # Coordinate sanity check
+        # 1. Coordinate validation
         if not (-90.0 <= start_lat <= 90.0 and -90.0 <= dest_lat <= 90.0):
             raise InvalidCoordinatesError("Latitude must be between -90.0 and 90.0 degrees.")
         if not (-180.0 <= start_lon <= 180.0 and -180.0 <= dest_lon <= 180.0):
@@ -119,13 +143,13 @@ class RoutePlanningService:
                 total_cost=0.0,
             )
 
-        # 1. Build or retrieve graph
+        # 2. Build or retrieve graph covering voyage corridor
         if self.graph_factory:
             graph = self.graph_factory(start_lat, start_lon, dest_lat, dest_lon)
         else:
             graph = self._build_bounding_grid(start_lat, start_lon, dest_lat, dest_lon)
 
-        # 2. Populate environment
+        # 3. Populate environment using BatchCapableProvider pipeline
         ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT12:00:00Z")
         if self.environment_provider is not None:
             try:
@@ -142,7 +166,7 @@ class RoutePlanningService:
                 logger.error("Unexpected error fetching environmental data: %s", exc)
                 raise EnvironmentUnavailableError(f"Environmental data fetch failed: {exc}") from exc
         else:
-            # Baseline calm maritime conditions if no dynamic provider configured
+            # Baseline calm maritime conditions if explicitly unconfigured
             baseline_env = EnvironmentalData(
                 timestamp=ts,
                 current_speed=0.2,
@@ -159,30 +183,20 @@ class RoutePlanningService:
                 weights=self.default_weights,
             )
 
-        # 3. Locate start and destination nodes
+        # 4. Map start and destination to grid nodes
         start_node_id = self._find_nearest_node_id(graph, start_lat, start_lon)
         dest_node_id = self._find_nearest_node_id(graph, dest_lat, dest_lon)
 
         if not start_node_id or not dest_node_id:
             raise RouteNotFoundError("Could not map start or destination to a navigable grid node.")
 
-        if start_node_id == dest_node_id:
-            # Fallback to direct coords if snap collision occurs on coarse grid
-            dist = calculate_haversine_distance(start_lat, start_lon, dest_lat, dest_lon)
-            hours = dist / max(self.ship_profile.cruising_speed, 1.0)
-            return RoutePlanResult(
-                imo_number=imo_number,
-                status="route_ready",
-                route=[
-                    (round(start_lat, 4), round(start_lon, 4)),
-                    (round(dest_lat, 4), round(dest_lon, 4)),
-                ],
-                distance_nm=round(dist, 2),
-                estimated_time_hours=round(hours, 2),
-                total_cost=round(dist * 0.1, 2),
-            )
+        if start_node_id == dest_node_id and not math_isclose_coords(start_lat, start_lon, dest_lat, dest_lon):
+            # If mapped to identical node on coarse grid, select second nearest node for destination
+            second_dest = self._find_second_nearest_node_id(graph, dest_lat, dest_lon, exclude_id=start_node_id)
+            if second_dest:
+                dest_node_id = second_dest
 
-        # 4. Run D* Lite path planning
+        # 5. Run D* Lite path planning
         dstar = DStarLite(graph=graph, start_id=start_node_id, goal_id=dest_node_id)
         reachable = dstar.compute_shortest_path()
         path = dstar.get_path()
@@ -191,7 +205,7 @@ class RoutePlanningService:
         if not reachable or not path:
             raise RouteNotFoundError("No navigable maritime route could be found between specified coordinates.")
 
-        # 5. Extract waypoints and compute distance & travel time metrics
+        # 6. Extract waypoints and calculate route metrics
         route_coords: List[Tuple[float, float]] = []
         total_nm = 0.0
         total_hours = 0.0
@@ -230,7 +244,10 @@ class RoutePlanningService:
         dest_lat: float,
         dest_lon: float,
     ) -> GeographicGridGraph:
-        """Constructs a regular navigation grid spanning the bounding area of start and destination."""
+        """
+        Constructs a regular navigation grid covering the bounding corridor
+        of the start and destination coordinates with adequate margins.
+        """
         min_lat = min(start_lat, dest_lat)
         max_lat = max(start_lat, dest_lat)
         min_lon = min(start_lon, dest_lon)
@@ -239,8 +256,9 @@ class RoutePlanningService:
         lat_span = max_lat - min_lat
         lon_span = max_lon - min_lon
 
-        margin_lat = max(0.15, lat_span * 0.25)
-        margin_lon = max(0.15, lon_span * 0.25)
+        # Margins: at least 0.20 deg (~12 NM) padding, or 25% of corridor span
+        margin_lat = max(0.20, lat_span * 0.25)
+        margin_lon = max(0.20, lon_span * 0.25)
 
         origin_lat = max(-90.0, min_lat - margin_lat)
         origin_lon = max(-180.0, min_lon - margin_lon)
@@ -250,8 +268,10 @@ class RoutePlanningService:
         total_lat = top_lat - origin_lat
         total_lon = right_lon - origin_lon
 
-        rows = max(3, min(15, round(total_lat / 0.25) + 1))
-        cols = max(3, min(15, round(total_lon / 0.25) + 1))
+        # Calculate rows and cols (min 4x4, max 15x15)
+        res = self.grid_resolution_deg
+        rows = max(4, min(15, round(total_lat / res) + 1))
+        cols = max(4, min(15, round(total_lon / res) + 1))
 
         lat_spacing = total_lat / max(rows - 1, 1)
         lon_spacing = total_lon / max(cols - 1, 1)
@@ -285,6 +305,27 @@ class RoutePlanningService:
 
         for node in graph.get_all_nodes():
             if not node.is_navigable:
+                continue
+            dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
+            if dist < best_dist:
+                best_dist = dist
+                best_id = node.node_id
+
+        return best_id
+
+    def _find_second_nearest_node_id(
+        self,
+        graph: GeographicGridGraph,
+        lat: float,
+        lon: float,
+        exclude_id: str,
+    ) -> Optional[str]:
+        """Finds the second closest navigable node, excluding the specified node ID."""
+        best_id: Optional[str] = None
+        best_dist = float("inf")
+
+        for node in graph.get_all_nodes():
+            if not node.is_navigable or node.node_id == exclude_id:
                 continue
             dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
             if dist < best_dist:
