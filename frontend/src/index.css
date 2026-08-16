@@ -177,6 +177,81 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Leaflet integration
+   --------------------------------------------------------------------------- */
+@layer components {
+  .leaflet-container {
+    background: var(--ocean);
+    font-family: var(--font-sans);
+    z-index: 0;
+  }
+
+  /* Raster tiles are authored for light backgrounds. Rather than ship a second
+     tile set, dim and desaturate them so the chart sits correctly in dark mode
+     while the vector overlays keep their full colour. */
+  .naudisha-map-dark .leaflet-tile-pane {
+    filter: brightness(0.68) saturate(0.75) contrast(1.05);
+  }
+
+  .leaflet-control-attribution,
+  .leaflet-control-layers {
+    background: color-mix(in oklch, var(--card) 92%, transparent) !important;
+    color: var(--muted-foreground) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+    font-size: 10px !important;
+  }
+
+  .leaflet-control-attribution a {
+    color: var(--primary) !important;
+  }
+
+  .leaflet-bar a {
+    background: var(--card) !important;
+    color: var(--foreground) !important;
+    border-color: var(--border) !important;
+  }
+  .leaflet-bar a:hover {
+    background: var(--secondary) !important;
+  }
+
+  /* divIcon wrappers must not paint their own box. */
+  .naudisha-marker {
+    background: transparent;
+    border: none;
+  }
+
+  .naudisha-ship-marker {
+    transition: transform 900ms linear;
+  }
+
+  .naudisha-alert-pulse {
+    animation: alert-pulse 1.8s ease-in-out infinite;
+  }
+
+  @keyframes alert-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.14);
+      opacity: 0.82;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .naudisha-alert-pulse {
+      animation: none;
+    }
+    .naudisha-ship-marker {
+      transition: none;
+    }
+  }
+}
+
 @layer utilities {
   .scrollbar-thin {
     scrollbar-width: thin;

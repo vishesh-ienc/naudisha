@@ -32,6 +32,19 @@ export const DEMO_REGION = {
   bounds: { south: 17.6, north: 20.2, west: 70.2, east: 73.4 },
 } as const
 
+/**
+ * Demo vessel positions, deliberately offshore.
+ *
+ * API_CONTRACT's worked example uses 18.52°N 72.91°E, which is actually just
+ * inland near Alibag. Reusing it verbatim would make the app auto-fill a start
+ * point and then immediately reject it via the land guard — self-contradictory
+ * to anyone watching. These sit in open water on the same approaches, so the
+ * demo flows cleanly while staying in the corridor the engine is verified for.
+ */
+export const DEMO_SHIP_POSITION: Coordinate = { latitude: 18.52, longitude: 72.55 }
+export const DEMO_UNDERWAY_POSITION: Coordinate = { latitude: 18.58, longitude: 72.5 }
+export const DEMO_DESTINATION: Coordinate = { latitude: 19.07, longitude: 72.42 }
+
 export const MOCK_VESSELS: Record<string, { name: string; type: string }> = Object.fromEntries(
   SAMPLE_IMO_NUMBERS.map((v) => [v.imo, { name: v.name, type: v.type }]),
 )
@@ -146,7 +159,7 @@ export function mockShip(imo: string): ShipResponse {
     imo_number: imo,
     name: vessel.name,
     status: 'underway',
-    position: { latitude: 18.52, longitude: 72.91 },
+    position: DEMO_SHIP_POSITION,
     // ADDENDUM fields: deliberately incomplete, so the manual-entry flow that
     // reacts to `missing_fields` is exercised during mock development.
     ship: {
@@ -202,16 +215,16 @@ export function mockShipStatus(imo: string, position?: Coordinate): ShipStatusRe
   return {
     imo_number: imo,
     status: 'underway',
-    position: position ?? { latitude: 18.58, longitude: 72.94 },
+    position: position ?? DEMO_UNDERWAY_POSITION,
     timestamp: new Date().toISOString(),
-    destination: { latitude: 19.07, longitude: 72.87 },
+    destination: DEMO_DESTINATION,
     route_status: 'optimal',
   }
 }
 
 export function mockCurrentRoute(imo: string, from?: Coordinate): CurrentRouteResponse {
-  const start = from ?? { latitude: 18.58, longitude: 72.94 }
-  const destination = { latitude: 19.07, longitude: 72.87 }
+  const start = from ?? DEMO_UNDERWAY_POSITION
+  const destination = DEMO_DESTINATION
   const path = generateMockRoute(start, destination, { waypoints: 6, bow: 0.1 })
   const distance = pathDistanceNm(path)
   const hours = distance / 18

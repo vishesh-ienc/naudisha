@@ -1,25 +1,35 @@
 /**
  * Polls the backend health endpoint so the UI can state plainly whether it is
- * talking to a real server or running on placeholder data.
+ * talking to a real server or running on demo data.
  *
- * Polls slowly (20s) because this is ambient status, not a data dependency —
- * individual calls already handle their own failures. Its job is to let the user
- * know *before* they act that the backend is down.
+ * Backs off while the backend is down. Developing the frontend ahead of the
+ * backend is the normal case, and a fixed 20-second poll against a server that
+ * does not exist produces a stream of pointless failures in every log. The
+ * interval doubles up to a two-minute ceiling and snaps back to the base rate
+ * the moment the backend answers, so recovery is still noticed promptly.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { probeBackend, useApiModeAware, type BackendHealth } from '@/services/backendStatus'
 
-export function useBackendHealth(intervalMs = 20_000): BackendHealth & { checking: boolean } {
+const MAX_INTERVAL_MS = 120_000
+
+export function useBackendHealth(baseIntervalMs = 20_000): BackendHealth & { checking: boolean } {
   const [health, setHealth] = useState<BackendHealth>({ online: false, checkedAt: 0 })
   const [checking, setChecking] = useState(true)
   const mode = useApiModeAware()
+  const intervalRef = useRef(baseIntervalMs)
 
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
 
-    async function check() {
+    const scheduleNext = () => {
+      if (cancelled) return
+      timer = setTimeout(run, intervalRef.current)
+    }
+
+    async function run() {
       // In Force Demo mode the backend is intentionally not contacted, so a
       // health probe would be noise in the console log.
       if (mode === 'mock') {
@@ -27,25 +37,32 @@ export function useBackendHealth(intervalMs = 20_000): BackendHealth & { checkin
           setHealth({ online: false, checkedAt: Date.now(), detail: 'Force Demo mode' })
           setChecking(false)
         }
+        scheduleNext()
         return
       }
 
       if (!cancelled) setChecking(true)
       const result = await probeBackend()
-      if (!cancelled) {
-        setHealth(result)
-        setChecking(false)
-      }
+      if (cancelled) return
+
+      setHealth(result)
+      setChecking(false)
+
+      intervalRef.current = result.online
+        ? baseIntervalMs
+        : Math.min(intervalRef.current * 2, MAX_INTERVAL_MS)
+
+      scheduleNext()
     }
 
-    void check()
-    timer = setInterval(() => void check(), intervalMs)
+    intervalRef.current = baseIntervalMs
+    void run()
 
     return () => {
       cancelled = true
-      clearInterval(timer)
+      clearTimeout(timer)
     }
-  }, [intervalMs, mode])
+  }, [baseIntervalMs, mode])
 
   return { ...health, checking }
 }
