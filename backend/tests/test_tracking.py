@@ -418,7 +418,48 @@ class TestWebSocketStreaming(unittest.TestCase):
             self.assertEqual(second["type"], "position_update")
             self.assertIn("latitude", second["position"])
             self.assertIn("timestamp", second)
+            self.assertIn("position_source", second)
+            self.assertIn("is_live_position", second)
+
+    def test_31_ais_track_endpoint_returns_history(self) -> None:
+        """GET /api/ships/{imo}/track returns empty when no session, and track points when AIS recorded."""
+        # When no session
+        res = self.client.get("/api/ships/1234567/track")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["imo_number"], "1234567")
+        self.assertEqual(data["source"], "ais")
+        self.assertEqual(data["track"], [])
+
+        # Start tracking and append an AIS track point
+        self.client.post(
+            "/api/ships/1234567/tracking/start",
+            json={
+                "destination": {"latitude": DESTINATION[0], "longitude": DESTINATION[1]},
+                "origin": {"latitude": ORIGIN[0], "longitude": ORIGIN[1]},
+            },
+        )
+        session = tracking_manager.get("1234567")
+        self.assertIsNotNone(session)
+        session.append_ais_track_point(18.55, 72.56, "2026-08-16T12:00:00Z")
+
+        res = self.client.get("/api/ships/1234567/track")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(len(data["track"]), 1)
+        self.assertEqual(data["track"][0]["latitude"], 18.55)
+        self.assertEqual(data["track"][0]["longitude"], 72.56)
+
+    def test_32_ais_stats_endpoint(self) -> None:
+        """GET /api/ais/stats returns status schema."""
+        res = self.client.get("/api/ais/stats")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("enabled", data)
+        self.assertIn("connected", data)
+        self.assertIn("messages_seen", data)
 
 
 if __name__ == "__main__":
     unittest.main()
+

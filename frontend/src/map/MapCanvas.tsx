@@ -1,38 +1,65 @@
 /**
- * The chart surface.
+ * Modern dark marine chart canvas.
  *
- * Base layer is OpenStreetMap with the OpenSeaMap seamark overlay — both free,
- * no API token, and the seamark layer adds real nautical markings (buoys,
- * lights, traffic separation) which makes it read as a marine chart rather than
- * a road map.
- *
- * The frontend never computes route geometry (API_CONTRACT §16). This component
- * draws what it is given.
+ * Combines high-contrast dark cartography with OpenSeaMap nautical seamarks,
+ * Green optimal route polyline, Red direct/baseline route polyline, rotating boat marker,
+ * and animated environmental wind/current vector layers.
  */
 
 import { useEffect, useMemo } from 'react'
-import { MapContainer, TileLayer, Polyline, Marker, Circle, useMap, useMapEvents, LayersControl } from 'react-leaflet'
+import {
+  MapContainer,
+  TileLayer,
+  Polyline,
+  Marker,
+  Popup,
+  useMap,
+  LayersControl,
+} from 'react-leaflet'
 import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import type { Coordinate, RouteAlert } from '@/types/api'
-import { NAVIGABLE_REGION, boundsOf, smoothPath, bearingDeg } from '@/lib/geo'
-import { useTheme } from '@/hooks/useTheme'
-import { alertIcon, destinationIcon, shipIcon, startIcon, waypointIcon } from './markers'
+import type { Coordinate, RouteAlert, RouteLeg } from '@/types/api'
+import { NAVIGABLE_REGION, boundsOf, smoothPath } from '@/lib/geo'
+import { formatCoordinate } from '@/lib/format'
+import {
+  alertIcon,
+  currentVectorIcon,
+  destinationIcon,
+  shipIcon,
+  startIcon,
+  waypointIcon,
+  windVectorIcon,
+} from './markers'
+import { MapLegend } from './MapLegend'
+import { cn } from '@/lib/utils'
 
 export interface MapCanvasProps {
   start?: Coordinate | null
   destination?: Coordinate | null
-  /** Waypoints exactly as returned by the backend. */
+  /** Optimal route calculated by NauDisha — rendered in GREEN */
   route?: Coordinate[]
-  /** Previous route, drawn faded so a replan is visible as a change. */
+  /** Direct baseline or unoptimized route — rendered in RED */
+  directRoute?: Coordinate[]
+  /** Detailed segment breakdown containing environmental forecast numbers */
+  legs?: RouteLeg[]
+  /** Previous route, drawn faded during dynamic replanning */
   previousRoute?: Coordinate[]
   shipPosition?: Coordinate | null
   shipHeading?: number
+  /**
+   * Provenance of the ship position — used to show the correct label on the marker.
+   * 'aisstream' | 'digitraffic' = AIS LIVE
+   * 'simulated' = SIMULATED
+   * 'static' = STATIC DATA
+   * 'none' | undefined = OFFLINE
+   */
+  positionSource?: string
+  /** Deprecated — use positionSource instead. Kept for backward compat. */
   shipSimulated?: boolean
+  shipName?: string
   alerts?: RouteAlert[]
-  onMapClick?: (coordinate: Coordinate) => void
-  /** Draws dashed legs from the true endpoints to the route's first/last node. */
-  showApproachLegs?: boolean
+  showVectors?: boolean
+  showLegend?: boolean
   className?: string
   interactive?: boolean
 }
@@ -41,242 +68,441 @@ export function MapCanvas({
   start,
   destination,
   route = [],
+  directRoute,
+  legs = [],
   previousRoute = [],
   shipPosition,
   shipHeading = 0,
+  positionSource,
   shipSimulated = false,
+  shipName,
   alerts = [],
-  onMapClick,
-  showApproachLegs = true,
+  showVectors = true,
+  showLegend = true,
   className,
   interactive = true,
 }: MapCanvasProps) {
-  const center: LatLngExpression = [NAVIGABLE_REGION.center.latitude, NAVIGABLE_REGION.center.longitude]
+  // Derive label from backend-provided positionSource (preferred) or legacy shipSimulated flag
+  const positionLabel = (() => {
+    const src = positionSource ?? (shipSimulated ? 'simulated' : 'none')
+    if (src === 'aisstream' || src === 'digitraffic') return { text: 'AIS LIVE', color: 'text-cyan-300', bg: 'bg-cyan-500/20' }
+    if (src === 'simulated') return { text: 'SIMULATED', color: 'text-amber-300', bg: 'bg-amber-500/20' }
+    if (src === 'static') return { text: 'STATIC DATA', color: 'text-slate-300', bg: 'bg-slate-500/20' }
+    return { text: 'OFFLINE', color: 'text-rose-300', bg: 'bg-rose-500/20' }
+  })()
+  const center: LatLngExpression = useMemo(() => {
+    if (shipPosition) return [shipPosition.latitude, shipPosition.longitude]
+    if (start) return [start.latitude, start.longitude]
+    return [NAVIGABLE_REGION.center.latitude, NAVIGABLE_REGION.center.longitude]
+  }, [shipPosition, start])
+
+
+  // Extract environmental midpoints along legs
+  const { windVectors, currentVectors } = useMemo(() => {
+    if (!legs || legs.length === 0 || !showVectors) {
+      return { windVectors: [], currentVectors: [] }
+    }
+
+    const winds: Array<{ position: Coordinate; speed: number; direction: number; legIndex: number }> = []
+    const currents: Array<{
+      position: Coordinate
+      speed: number
+      direction: number
+      alongTrack: number
+      isAssist: boolean
+      legIndex: number
+    }> = []
+
+    legs.forEach((leg, idx) => {
+      // Calculate midpoint of segment
+      const midLat = (leg.from.latitude + leg.to.latitude) / 2
+      const midLon = (leg.from.longitude + leg.to.longitude) / 2
+      const midPos: Coordinate = { latitude: midLat, longitude: midLon }
+
+      if (leg.wind_speed_kn != null && leg.wind_direction_deg != null) {
+        winds.push({
+          position: midPos,
+          speed: leg.wind_speed_kn,
+          direction: leg.wind_direction_deg,
+          legIndex: idx + 1,
+        })
+      }
+
+      if (leg.current_speed_kn != null && leg.current_direction_deg != null) {
+        currents.push({
+          position: midPos,
+          speed: leg.current_speed_kn,
+          direction: leg.current_direction_deg,
+          alongTrack: leg.along_track_current_kn ?? 0,
+          isAssist: (leg.along_track_current_kn ?? 0) >= 0,
+          legIndex: idx + 1,
+        })
+      }
+    })
+
+    return { windVectors: winds, currentVectors: currents }
+  }, [legs, showVectors])
+
+  // Generate direct baseline route if start/destination exist and no direct route was explicitly supplied
+  const effectiveDirectRoute: LatLngExpression[] = useMemo(() => {
+    if (directRoute && directRoute.length >= 2) {
+      return directRoute.map((p) => [p.latitude, p.longitude])
+    }
+    const origin = shipPosition ?? start
+    if (origin && destination && route.length > 0) {
+      return [
+        [origin.latitude, origin.longitude],
+        [destination.latitude, destination.longitude],
+      ]
+    }
+    return []
+  }, [directRoute, shipPosition, start, destination, route.length])
+
+  // Convert and smooth the optimal green route path
+  const smoothedOptimalPositions: LatLngExpression[] = useMemo(() => {
+    if (!route || route.length < 2) return []
+    const smooth = smoothPath(route)
+    return smooth.map((p) => [p.latitude, p.longitude])
+  }, [route])
+
+  // Previous replanned route for comparison
+  const previousPositions: LatLngExpression[] = useMemo(() => {
+    if (!previousRoute || previousRoute.length < 2) return []
+    return previousRoute.map((p) => [p.latitude, p.longitude])
+  }, [previousRoute])
+
+  // Calculate auto-fit bounds
+  const fitBounds: LatLngBoundsExpression | null = useMemo(() => {
+    const points: Coordinate[] = []
+    if (start) points.push(start)
+    if (destination) points.push(destination)
+    if (shipPosition) points.push(shipPosition)
+    if (route && route.length > 0) points.push(...route)
+
+    if (points.length >= 2) {
+      const b = boundsOf(points)
+      // Extra generous padding so both markers are well-framed
+      return [
+        [b.south - 0.5, b.west - 0.5],
+        [b.north + 0.5, b.east + 0.5],
+      ]
+    }
+    // Even with just start+destination (no route yet), still fit the view
+    if (start && destination) {
+      const b = boundsOf([start, destination])
+      return [
+        [b.south - 0.5, b.west - 0.5],
+        [b.north + 0.5, b.east + 0.5],
+      ]
+    }
+    return null
+  }, [start, destination, shipPosition, route])
 
   return (
-    <MapContainer
-      center={center}
-      zoom={NAVIGABLE_REGION.defaultZoom}
-      className={className}
-      scrollWheelZoom={interactive}
-      dragging={interactive}
-      zoomControl={interactive}
-      attributionControl
-    >
-      <TileThemeSync />
+    <div className={cn('relative h-full w-full overflow-hidden rounded-2xl border border-[var(--border)] shadow-2xl', className)}>
+      <MapContainer
+        center={center}
+        zoom={9}
+        minZoom={4}
+        maxZoom={17}
+        className="h-full w-full bg-[#0b1329]"
+        zoomControl={interactive}
+        dragging={interactive}
+        scrollWheelZoom={interactive}
+        doubleClickZoom={interactive}
+        attributionControl={false}
+      >
+        {/* Layer Selection Controller */}
+        <LayersControl position="topright">
+          {/* Base Layer: Satellite imagery — DEFAULT */}
+          <LayersControl.BaseLayer checked name="Satellite Surface">
+            <TileLayer
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+              maxZoom={18}
+            />
+          </LayersControl.BaseLayer>
 
-      <LayersControl position="topright">
-        <LayersControl.BaseLayer checked name="Standard">
-          <TileLayer
-            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            maxZoom={18}
-          />
-        </LayersControl.BaseLayer>
+          {/* Base Layer: CartoDB Dark Matter */}
+          <LayersControl.BaseLayer name="Dark Marine Chart">
+            <TileLayer
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+              subdomains="abcd"
+              maxZoom={19}
+            />
+          </LayersControl.BaseLayer>
 
-        <LayersControl.BaseLayer name="Muted">
-          <TileLayer
-            url="https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png"
-            attribution='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; OpenStreetMap'
-            maxZoom={18}
-          />
-        </LayersControl.BaseLayer>
+          {/* Seamarks Overlay: OpenSeaMap navigation aids, buoys, beacons, fairways */}
+          <LayersControl.Overlay checked name="Nautical Seamarks (OpenSeaMap)">
+            <TileLayer
+              url="https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
+              maxZoom={18}
+              opacity={0.88}
+            />
+          </LayersControl.Overlay>
+        </LayersControl>
 
-        <LayersControl.Overlay checked name="Seamarks">
-          <TileLayer
-            url="https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://www.openseamap.org">OpenSeaMap</a>'
-            maxZoom={18}
-            opacity={0.9}
-          />
-        </LayersControl.Overlay>
-      </LayersControl>
+        {/* Auto-fit map viewport to active passage or single vessel position */}
+        <MapBoundsController bounds={fitBounds} singlePoint={shipPosition ?? start} />
 
-      {onMapClick && <ClickHandler onMapClick={onMapClick} />}
-      <FitToContent start={start} destination={destination} route={route} shipPosition={shipPosition} />
 
-      {/* Previous route, faded — makes a replan legible as a change rather than
-          a silent swap. */}
-      {previousRoute.length > 1 && (
-        <Polyline
-          positions={toLatLngs(smoothPath(previousRoute))}
-          pathOptions={{ color: 'var(--muted-foreground)', weight: 3, opacity: 0.35, dashArray: '6 8' }}
-        />
-      )}
-
-      {/* Approach legs. The backend snaps endpoints to grid nodes, so the route
-          can start some distance from the requested position; drawing the gap
-          dashed is honest about it instead of leaving a floating line. */}
-      {showApproachLegs && start && route.length > 0 && (
-        <Polyline
-          positions={toLatLngs([start, route[0]!])}
-          pathOptions={{ color: 'var(--muted-foreground)', weight: 2, opacity: 0.6, dashArray: '3 6' }}
-        />
-      )}
-      {showApproachLegs && destination && route.length > 0 && (
-        <Polyline
-          positions={toLatLngs([route[route.length - 1]!, destination])}
-          pathOptions={{ color: 'var(--muted-foreground)', weight: 2, opacity: 0.6, dashArray: '3 6' }}
-        />
-      )}
-
-      {route.length > 1 && (
-        <>
-          {/* Halo beneath the route keeps it readable over busy tiles. */}
+        {/* Previous Route Trail (Faded Cyan/Gray) */}
+        {previousPositions.length > 0 && (
           <Polyline
-            positions={toLatLngs(smoothPath(route))}
-            pathOptions={{ color: 'var(--card)', weight: 9, opacity: 0.75 }}
+            positions={previousPositions}
+            pathOptions={{
+              color: '#64748b',
+              weight: 3,
+              opacity: 0.45,
+              dashArray: '4, 8',
+            }}
           />
-          <Polyline
-            positions={toLatLngs(smoothPath(route))}
-            pathOptions={{ color: 'var(--route)', weight: 4, opacity: 0.95, lineCap: 'round' }}
-          />
-        </>
-      )}
+        )}
 
-      {/* True backend waypoints — the smoothed line passes through these. */}
-      {route.length > 2 &&
-        route.slice(1, -1).map((wp, i) => (
-          <Marker key={`wp-${i}`} position={[wp.latitude, wp.longitude]} icon={waypointIcon} />
+        {/* 1. DIRECT / BASELINE ROUTE — RENDERED IN RED */}
+        {effectiveDirectRoute.length > 0 && (
+          <>
+            {/* Red Underlay Glow */}
+            <Polyline
+              positions={effectiveDirectRoute}
+              pathOptions={{
+                color: '#ef4444',
+                weight: 6,
+                opacity: 0.25,
+                lineCap: 'round',
+              }}
+            />
+            {/* Red Dashed Core Line */}
+            <Polyline
+              positions={effectiveDirectRoute}
+              pathOptions={{
+                color: '#f43f5e',
+                weight: 3.5,
+                opacity: 0.85,
+                dashArray: '8, 8',
+                lineCap: 'round',
+              }}
+            >
+              <Popup className="naudisha-popup">
+                <div className="p-1.5 font-sans text-xs">
+                  <div className="font-bold text-rose-400">Direct Baseline Track (Unoptimized)</div>
+                  <p className="mt-1 text-muted-foreground">
+                    Straight-line path vulnerable to adverse currents, wave resistance, and wind drag.
+                  </p>
+                </div>
+              </Popup>
+            </Polyline>
+          </>
+        )}
+
+        {/* 2. NAUDISHA OPTIMAL ROUTE — RENDERED IN VIBRANT GREEN */}
+        {smoothedOptimalPositions.length > 0 && (
+          <>
+            {/* Green Outer Ambient Glow */}
+            <Polyline
+              positions={smoothedOptimalPositions}
+              pathOptions={{
+                color: '#10b981',
+                weight: 9,
+                opacity: 0.3,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+            {/* Green Core High-Contrast Line */}
+            <Polyline
+              positions={smoothedOptimalPositions}
+              pathOptions={{
+                color: '#22c55e',
+                weight: 4.5,
+                opacity: 0.95,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            >
+              <Popup className="naudisha-popup">
+                <div className="p-1.5 font-sans text-xs">
+                  <div className="font-bold text-emerald-400">NauDisha Optimal Route</div>
+                  <p className="mt-1 text-muted-foreground">
+                    Multi-factor $D^*$ Lite calculated route minimizing fuel, weather drag, and sea hazard exposure.
+                  </p>
+                </div>
+              </Popup>
+            </Polyline>
+          </>
+        )}
+
+        {/* Start Point Marker */}
+        {start && (
+          <Marker position={[start.latitude, start.longitude]} icon={startIcon}>
+            <Popup className="naudisha-popup">
+              <div className="p-1.5 font-sans text-xs">
+                <div className="font-bold text-emerald-400 uppercase tracking-wider text-[10px]">Voyage Origin</div>
+                <div className="mt-1 font-mono text-[11px] text-foreground">{formatCoordinate(start, 4)}</div>
+              </div>
+            </Popup>
+          </Marker>
+        )}
+
+        {/* Destination Point Marker */}
+        {destination && (
+          <Marker position={[destination.latitude, destination.longitude]} icon={destinationIcon}>
+            <Popup className="naudisha-popup">
+              <div className="p-1.5 font-sans text-xs">
+                <div className="font-bold text-rose-400 uppercase tracking-wider text-[10px]">Destination Port</div>
+                <div className="mt-1 font-mono text-[11px] text-foreground">{formatCoordinate(destination, 4)}</div>
+              </div>
+            </Popup>
+          </Marker>
+        )}
+
+        {/* Route Waypoint Nodes */}
+        {route && route.length > 2 && route.slice(1, -1).map((pt, i) => (
+          <Marker key={`wp-${i}`} position={[pt.latitude, pt.longitude]} icon={waypointIcon}>
+            <Popup className="naudisha-popup">
+              <div className="p-1.5 font-sans text-xs">
+                <div className="font-bold text-emerald-400 text-[10px]">Waypoint {i + 1}</div>
+                <div className="mt-0.5 font-mono text-[11px]">{formatCoordinate(pt, 4)}</div>
+              </div>
+            </Popup>
+          </Marker>
         ))}
 
-      {alerts.map((alert) =>
-        alert.position ? (
-          <div key={alert.id}>
-            {alert.radius_nm ? (
-              <Circle
-                center={[alert.position.latitude, alert.position.longitude]}
-                radius={alert.radius_nm * 1852}
-                pathOptions={{
-                  color: alert.severity === 'critical' ? 'var(--destructive)' : 'var(--warning)',
-                  fillColor: alert.severity === 'critical' ? 'var(--destructive)' : 'var(--warning)',
-                  fillOpacity: 0.12,
-                  weight: 1.5,
-                  dashArray: '5 5',
-                }}
-              />
-            ) : null}
+        {/* REAL-TIME ANIMATED WIND VECTORS (Open-Meteo) */}
+        {showVectors && windVectors.map((vec, idx) => (
+          <Marker
+            key={`wind-${idx}`}
+            position={[vec.position.latitude, vec.position.longitude]}
+            icon={windVectorIcon(vec.direction, vec.speed)}
+          >
+            <Popup className="naudisha-popup">
+              <div className="p-1.5 font-sans text-xs">
+                <div className="font-bold text-sky-400 uppercase tracking-wider text-[10px]">
+                  Atmospheric Wind · Leg {vec.legIndex}
+                </div>
+                <div className="mt-1 grid grid-cols-2 gap-1 font-mono text-[11px]">
+                  <div>Velocity: <span className="font-bold text-sky-300">{Math.round(vec.speed)} kn</span></div>
+                  <div>Heading: <span className="font-bold text-sky-300">{Math.round(vec.direction)}°</span></div>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">Source: Open-Meteo High-Res Marine API</div>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+
+        {/* REAL-TIME ANIMATED OCEAN CURRENT VECTORS (Copernicus) */}
+        {showVectors && currentVectors.map((vec, idx) => (
+          <Marker
+            key={`curr-${idx}`}
+            position={[vec.position.latitude, vec.position.longitude]}
+            icon={currentVectorIcon(vec.direction, vec.speed, vec.isAssist)}
+          >
+            <Popup className="naudisha-popup">
+              <div className="p-1.5 font-sans text-xs">
+                <div className={cn('font-bold uppercase tracking-wider text-[10px]', vec.isAssist ? 'text-emerald-400' : 'text-amber-400')}>
+                  Ocean Surface Current · Leg {vec.legIndex} ({vec.isAssist ? 'Assisting' : 'Opposing'})
+                </div>
+                <div className="mt-1 grid grid-cols-2 gap-1 font-mono text-[11px]">
+                  <div>Speed: <span className="font-bold">{vec.speed.toFixed(1)} kn</span></div>
+                  <div>Direction: <span className="font-bold">{Math.round(vec.direction)}°</span></div>
+                  <div className="col-span-2">
+                    Along-Track: <span className={cn('font-bold', vec.alongTrack >= 0 ? 'text-emerald-400' : 'text-amber-400')}>
+                      {vec.alongTrack >= 0 ? `+${vec.alongTrack.toFixed(2)} kn (Push)` : `${vec.alongTrack.toFixed(2)} kn (Drag)`}
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">Source: Copernicus Marine Hydrodynamic Model</div>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+
+        {/* Real Moving Boat Marker with Live Heading & AIS Aura */}
+        {shipPosition && (
+          <Marker
+            position={[shipPosition.latitude, shipPosition.longitude]}
+            icon={shipIcon(shipHeading, positionSource === 'simulated' || shipSimulated)}
+            zIndexOffset={1000}
+          >
+            <Popup className="naudisha-popup">
+              <div className="p-1.5 font-sans text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-cyan-400">{shipName ?? 'Live Vessel'}</span>
+                  <span className={cn('rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase', positionLabel.color, positionLabel.bg)}>
+                    {positionLabel.text}
+                  </span>
+                </div>
+                <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                  Fix: <span className="text-foreground">{formatCoordinate(shipPosition, 4)}</span>
+                </div>
+                <div className="mt-0.5 font-mono text-[11px]">
+                  Heading: <span className="font-bold text-foreground">{Math.round(shipHeading)}°</span>
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        )}
+
+        {/* Route Alert Hazard Markers */}
+        {alerts.map((alert) => {
+          if (!alert.position) return null
+          return (
             <Marker
+              key={alert.id}
               position={[alert.position.latitude, alert.position.longitude]}
               icon={alertIcon(alert.severity)}
-              title={alert.message}
-            />
-          </div>
-        ) : null,
-      )}
+            >
+              <Popup className="naudisha-popup">
+                <div className="p-1.5 font-sans text-xs">
+                  <div className="font-bold text-rose-400 uppercase tracking-wider text-[10px]">
+                    {alert.severity} Hazard Alert
+                  </div>
+                  <p className="mt-1 text-muted-foreground">{alert.message}</p>
+                  <div className="mt-1 font-mono text-[10px] text-muted-foreground/80">
+                    Radius: {alert.radius_nm} NM
+                  </div>
+                </div>
+              </Popup>
+            </Marker>
+          )
+        })}
+      </MapContainer>
 
-      {start && <Marker position={[start.latitude, start.longitude]} icon={startIcon} title="Start" />}
-      {destination && (
-        <Marker position={[destination.latitude, destination.longitude]} icon={destinationIcon} title="Destination" />
-      )}
-      {shipPosition && (
-        <Marker
-          position={[shipPosition.latitude, shipPosition.longitude]}
-          icon={shipIcon(shipHeading, shipSimulated)}
-          title="Vessel"
-          zIndexOffset={1000}
+      {/* Floating Marine Chart Legend */}
+      {showLegend && (
+        <MapLegend
+          hasWindData={windVectors.length > 0}
+          hasCurrentData={currentVectors.length > 0}
+          hasDirectRoute={effectiveDirectRoute.length > 0}
         />
       )}
-    </MapContainer>
+    </div>
   )
 }
 
-function toLatLngs(points: Coordinate[]): LatLngExpression[] {
-  return points.map((p) => [p.latitude, p.longitude] as LatLngExpression)
-}
-
-/** Dims the tile raster in dark mode so the chart doesn't glare. */
-function TileThemeSync() {
-  const { resolved } = useTheme()
+/** Helper component to fit map bounds on route or single vessel position change */
+function MapBoundsController({
+  bounds,
+  singlePoint,
+}: {
+  bounds: LatLngBoundsExpression | null
+  singlePoint?: Coordinate | null
+}) {
   const map = useMap()
-
   useEffect(() => {
-    const container = map.getContainer()
-    container.classList.toggle('naudisha-map-dark', resolved === 'dark')
-  }, [resolved, map])
-
-  return null
-}
-
-function ClickHandler({ onMapClick }: { onMapClick: (c: Coordinate) => void }) {
-  useMapEvents({
-    click(e) {
-      onMapClick({
-        latitude: Number(e.latlng.lat.toFixed(4)),
-        longitude: Number(e.latlng.lng.toFixed(4)),
+    if (bounds) {
+      map.fitBounds(bounds, {
+        padding: [45, 45],
+        maxZoom: 13,
+        animate: true,
+        duration: 0.8,
       })
-    },
-  })
+    } else if (singlePoint) {
+      map.flyTo([singlePoint.latitude, singlePoint.longitude], 8, {
+        animate: true,
+        duration: 0.8,
+      })
+    }
+  }, [bounds, singlePoint, map])
   return null
 }
 
-/**
- * Frames the content when the *shape* of what is displayed changes, not on every
- * position tick — otherwise the map would fight the user's pan during tracking.
- */
-function FitToContent({
-  start,
-  destination,
-  route,
-  shipPosition,
-}: Pick<MapCanvasProps, 'start' | 'destination' | 'route' | 'shipPosition'>) {
-  const map = useMap()
-
-  const points = useMemo(() => {
-    const all: Coordinate[] = []
-    if (start) all.push(start)
-    if (destination) all.push(destination)
-    if (shipPosition) all.push(shipPosition)
-    if (route && route.length) all.push(...route)
-    return all
-  }, [start, destination, route, shipPosition])
-
-  // Key on endpoints and route length only, so ship movement doesn't refit.
-  const fitKey = useMemo(
-    () =>
-      [
-        start ? `${start.latitude},${start.longitude}` : '-',
-        destination ? `${destination.latitude},${destination.longitude}` : '-',
-        route?.length ?? 0,
-      ].join('|'),
-    [start, destination, route?.length],
-  )
-
-  useEffect(() => {
-    if (points.length === 0) return
-
-    if (points.length === 1) {
-      map.setView([points[0]!.latitude, points[0]!.longitude], 10, { animate: true })
-      return
-    }
-
-    const b = boundsOf(points, 0.1)
-    if (!b) return
-    const bounds: LatLngBoundsExpression = [
-      [b.south, b.west],
-      [b.north, b.east],
-    ]
-    map.flyToBounds(bounds, { padding: [40, 40], duration: 0.8, maxZoom: 11 })
-    // `points` intentionally omitted — refit only when fitKey changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitKey, map])
-
-  return null
-}
-
-/** Course over ground between the last two path points, for marker rotation. */
-export function headingFromPath(path: Coordinate[], position: Coordinate): number {
-  if (path.length < 2) return 0
-  let nearest = 0
-  let best = Infinity
-  for (let i = 0; i < path.length; i += 1) {
-    const d = (path[i]!.latitude - position.latitude) ** 2 + (path[i]!.longitude - position.longitude) ** 2
-    if (d < best) {
-      best = d
-      nearest = i
-    }
-  }
-  const next = Math.min(nearest + 1, path.length - 1)
-  const prev = Math.max(next - 1, 0)
-  return bearingDeg(path[prev]!, path[next]!)
-}

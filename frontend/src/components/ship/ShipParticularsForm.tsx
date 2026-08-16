@@ -38,14 +38,22 @@ export const SHIP_TYPES = [
 ]
 
 interface ShipParticularsFormProps {
-  value: ShipParticulars
+  value?: ShipParticulars
+  particulars?: ShipParticulars
   onChange: (next: ShipParticulars) => void
   /** When provided, only these fields are shown. */
   onlyFields?: string[]
   disabled?: boolean
 }
 
-export function ShipParticularsForm({ value, onChange, onlyFields, disabled }: ShipParticularsFormProps) {
+export function ShipParticularsForm({
+  value,
+  particulars,
+  onChange,
+  onlyFields,
+  disabled,
+}: ShipParticularsFormProps) {
+  const currentVal = value ?? particulars ?? DEFAULT_PARTICULARS
   const fields = useMemo(
     () => (onlyFields?.length ? PARTICULAR_FIELDS.filter((f) => onlyFields.includes(f.key)) : PARTICULAR_FIELDS),
     [onlyFields],
@@ -55,15 +63,15 @@ export function ShipParticularsForm({ value, onChange, onlyFields, disabled }: S
 
   const set = (key: ParticularKey, raw: string) => {
     const parsed = raw.trim() === '' ? null : Number(raw)
-    onChange({ ...value, [key]: parsed != null && Number.isNaN(parsed) ? null : parsed })
+    onChange({ ...currentVal, [key]: parsed != null && Number.isNaN(parsed) ? null : parsed })
   }
 
   // maximum_speed >= cruising_speed is enforced by ShipProfile on the backend,
   // so catching it here avoids a round trip that can only fail.
   const speedConflict =
-    value.cruising_speed_kn != null &&
-    value.max_speed_kn != null &&
-    value.max_speed_kn < value.cruising_speed_kn
+    currentVal.cruising_speed_kn != null &&
+    currentVal.max_speed_kn != null &&
+    currentVal.max_speed_kn < currentVal.cruising_speed_kn
 
   return (
     <div className="space-y-4">
@@ -86,9 +94,9 @@ export function ShipParticularsForm({ value, onChange, onlyFields, disabled }: S
           </label>
           <select
             id="ship-type"
-            value={value.ship_type ?? ''}
+            value={currentVal.ship_type ?? ''}
             disabled={disabled}
-            onChange={(e) => onChange({ ...value, ship_type: e.target.value || null })}
+            onChange={(e) => onChange({ ...currentVal, ship_type: e.target.value || null })}
             className="h-11 w-full rounded-lg border border-[var(--input)] bg-background px-3 text-sm disabled:opacity-50"
           >
             <option value="">Select a type…</option>
@@ -106,7 +114,7 @@ export function ShipParticularsForm({ value, onChange, onlyFields, disabled }: S
           <Input
             key={field.key}
             label={`${field.label} (${field.unit})`}
-            value={value[field.key] ?? ''}
+            value={currentVal[field.key] ?? ''}
             onChange={(e) => set(field.key, e.target.value)}
             placeholder={field.placeholder}
             inputMode="decimal"

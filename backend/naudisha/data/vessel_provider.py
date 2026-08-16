@@ -426,8 +426,18 @@ class LiveAISManager(AISProvider):
                 logger.debug("Falling back to Digitraffic-only AIS: %s", exc)
                 self.external_provider = DigitrafficAISProvider()
 
+        # Proactively start background ingestion if enabled
+        if self.external_provider is not None:
+            if hasattr(self.external_provider, "providers"):
+                for p in self.external_provider.providers:
+                    if hasattr(p, "start") and getattr(p, "autostart", False):
+                        p.start()
+            elif hasattr(self.external_provider, "start") and getattr(self.external_provider, "autostart", False):
+                self.external_provider.start()
+
         self.stale_threshold_seconds = stale_threshold_seconds
         self._positions: Dict[str, Tuple[AISDataRecord, float]] = {}
+
 
     def record_ais_update(self, record: AISDataRecord) -> None:
         """Stores a freshly received live AIS transponder update."""

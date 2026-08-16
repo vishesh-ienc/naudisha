@@ -10,6 +10,9 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from dotenv import find_dotenv, load_dotenv
+# Load .env variables before any application modules are imported
+load_dotenv(find_dotenv(usecwd=True))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,8 +20,6 @@ from naudisha.api.errors import register_exception_handlers
 from naudisha.api.routes import api_router, health_router, ws_router
 from naudisha.api.tracking import tracking_manager
 
-# Load .env variables from local directory or workspace root
-load_dotenv(find_dotenv())
 
 
 @asynccontextmanager
@@ -30,6 +31,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     moving whether or not a WebSocket client is attached — which is what lets
     `GET /api/ships/{imo}/status` report genuine movement on its own.
     """
+    from naudisha.api.routes import get_route_service, get_vessel_provider
+
+    try:
+        vessel_prov = get_vessel_provider()
+        route_serv = get_route_service()
+        tracking_manager.set_route_service(route_serv)
+        if hasattr(vessel_prov, "ais_manager"):
+            tracking_manager.set_ais_provider(vessel_prov.ais_manager)
+    except Exception as exc:
+        pass
+
     tracking_manager.start_ticker()
     try:
         yield

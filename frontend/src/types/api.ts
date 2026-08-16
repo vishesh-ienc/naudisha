@@ -1,14 +1,8 @@
 /**
  * NauDisha API contract — TypeScript surface.
  *
- * Mirrors `docs/API_CONTRACT.md` v2 plus the two additive fields the backend
- * actually returns today (`legs`, and the async planning job endpoints).
- *
- * Rule: nothing is declared here that the backend does not send. Fields the
- * contract discussed but which were never implemented — `baseline_cost`,
- * `efficiency_gain_percent`, `missing_fields`, `alerts` — have been removed, so
- * the compiler now prevents the UI from depending on data that will never
- * arrive.
+ * Mirrors `docs/API_CONTRACT.md` v2 plus the additive fields the backend
+ * returns (`legs`, and the async planning job endpoints).
  */
 
 // ---------------------------------------------------------------------------
@@ -36,6 +30,16 @@ export interface ShipProfile {
   max_speed_kn: number
 }
 
+/** For manual entry or partial forms where fields may be null while editing. */
+export interface ShipParticulars {
+  ship_type?: string | null
+  length_m?: number | null
+  beam_m?: number | null
+  draft_m?: number | null
+  cruising_speed_kn?: number | null
+  max_speed_kn?: number | null
+}
+
 // ---------------------------------------------------------------------------
 // §4 Ships
 // ---------------------------------------------------------------------------
@@ -49,6 +53,12 @@ export interface ShipResponse {
   /** null when the vessel has no live AIS transponder report. */
   position: Coordinate | null
   ship?: ShipProfile
+  /** True only when position originates from a live AIS fix (not static registry or simulation). */
+  is_live_position?: boolean
+  /** 'aisstream' | 'digitraffic' | 'static' | 'none' */
+  position_source?: string
+  source?: string
+  missing_fields?: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -60,17 +70,12 @@ export interface RoutePreviewRequest {
   start: Coordinate
   destination: Coordinate
   departure_time?: IsoTimestamp
-  ship?: ShipProfile
+  ship?: ShipProfile | ShipParticulars
 }
 
 /**
  * Per-segment detail. Present on responses from this backend; treated as
  * optional so an older deployment that omits it still renders.
- *
- * Sign conventions, straight from the cost model:
- *   `relative_wind_dir`     0 deg = headwind, 180 deg = tailwind
- *   `relative_current_dir`  0 deg = following, 180 deg = opposing
- *   `along_track_current_kn` positive assists, negative opposes
  */
 export interface RouteLeg {
   from: Coordinate
@@ -109,15 +114,13 @@ export interface RoutePreviewResponse {
   distance_nm: number
   estimated_time_hours: number
   total_cost: number
+  baseline_cost?: number | null
+  efficiency_gain_percent?: number | null
   legs?: RouteLeg[]
 }
 
 // ---------------------------------------------------------------------------
 // Async planning jobs
-//
-// A cold plan costs 70-85s of live Copernicus queries. The synchronous
-// endpoint still exists, but the UI submits a job and polls so it can show
-// real progress instead of holding a request open past every sane timeout.
 // ---------------------------------------------------------------------------
 
 export type PlanJobStatus = 'planning' | 'ready' | 'failed'
@@ -162,9 +165,14 @@ export type RouteStatus = 'optimal' | 'updating' | 'unavailable'
 export interface ShipStatusResponse {
   imo_number: ImoNumber
   status: ShipStatus
-  position: Coordinate
+  /** null when no AIS fix exists; never a fabricated fallback coordinate. */
+  position: Coordinate | null
   timestamp: IsoTimestamp
   destination?: Coordinate | null
+  route_status?: RouteStatus
+  is_live_position?: boolean
+  /** 'aisstream' | 'digitraffic' | 'simulated' | 'none' */
+  position_source?: string
 }
 
 export interface CurrentRouteResponse {
@@ -176,12 +184,24 @@ export interface CurrentRouteResponse {
   total_cost: number
   updated_at: IsoTimestamp
   destination?: Coordinate | null
+  baseline_cost?: number | null
+  efficiency_gain_percent?: number | null
   legs?: RouteLeg[]
 }
 
 // ---------------------------------------------------------------------------
-// §9-§11 Live updates over WebSocket
+// §9-§11 Live updates over WebSocket & Alert definitions
 // ---------------------------------------------------------------------------
+
+export interface RouteAlert {
+  id: string
+  severity: 'warning' | 'critical' | 'info'
+  kind?: string
+  message: string
+  position?: Coordinate
+  radius_nm?: number
+  detected_at?: IsoTimestamp
+}
 
 /** §13.3 — unknown values must render, not throw. */
 export type RouteUpdateReason =
@@ -200,15 +220,35 @@ export interface RouteUpdateMessage {
   total_cost: number
   reason: RouteUpdateReason
   legs?: RouteLeg[]
+  alerts?: RouteAlert[]
+  position_source?: string
+  is_live_position?: boolean
 }
 
 export interface PositionUpdateMessage {
   type: 'position_update'
   timestamp: IsoTimestamp
   position: Coordinate
+  position_source?: string
+  is_live_position?: boolean
+  speed_kn?: number | null
+  heading_deg?: number | null
 }
 
 export type LiveMessage = RouteUpdateMessage | PositionUpdateMessage
+
+export interface AISTrackPoint {
+  latitude: number
+  longitude: number
+  timestamp: IsoTimestamp
+}
+
+export interface AISTrackResponse {
+  imo_number: ImoNumber
+  source: string
+  track: AISTrackPoint[]
+}
+
 
 // ---------------------------------------------------------------------------
 // §14/§15 Errors
@@ -227,6 +267,7 @@ export type ApiErrorCode =
 export interface ApiErrorDetail {
   code: ApiErrorCode
   message: string
+  missing_fields?: string[]
 }
 
 export interface ApiErrorResponse {
@@ -240,6 +281,7 @@ export interface ApiErrorResponse {
 export interface HealthResponse {
   status: string
   service: string
+  version?: string
 }
 
 export interface ReadinessResponse {

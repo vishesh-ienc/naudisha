@@ -23,7 +23,8 @@ import type {
   ShipStatusResponse,
   TrackingStartResponse,
 } from '@/types/api'
-import { SAMPLE_IMO_NUMBERS } from '@/lib/imo'
+import { SAMPLE_IMO_NUMBERS, type SampleVessel } from '@/lib/imo'
+import { bearingDeg, haversineNm } from '@/lib/geo'
 
 /** The demo region the backend's examples are verified against. */
 export const DEMO_REGION = {
@@ -34,34 +35,14 @@ export const DEMO_REGION = {
 
 /**
  * Demo vessel positions, deliberately offshore.
- *
- * API_CONTRACT's worked example uses 18.52°N 72.91°E, which is actually just
- * inland near Alibag. Reusing it verbatim would make the app auto-fill a start
- * point and then immediately reject it via the land guard — self-contradictory
- * to anyone watching. These sit in open water on the same approaches, so the
- * demo flows cleanly while staying in the corridor the engine is verified for.
  */
 export const DEMO_SHIP_POSITION: Coordinate = { latitude: 18.52, longitude: 72.55 }
 export const DEMO_UNDERWAY_POSITION: Coordinate = { latitude: 18.58, longitude: 72.5 }
 export const DEMO_DESTINATION: Coordinate = { latitude: 19.07, longitude: 72.42 }
 
 export const MOCK_VESSELS: Record<string, { name: string; type: string }> = Object.fromEntries(
-  SAMPLE_IMO_NUMBERS.map((v) => [v.imo, { name: v.name, type: v.type }]),
+  SAMPLE_IMO_NUMBERS.map((v: SampleVessel) => [v.imo, { name: v.name, type: v.type }]),
 )
-
-const NM_PER_DEG_LAT = 60
-
-function haversineNm(a: Coordinate, b: Coordinate): number {
-  const R = 3440.065 // Earth radius in nautical miles
-  const toRad = (d: number) => (d * Math.PI) / 180
-  const dLat = toRad(b.latitude - a.latitude)
-  const dLon = toRad(b.longitude - a.longitude)
-  const lat1 = toRad(a.latitude)
-  const lat2 = toRad(b.latitude)
-  const h =
-    Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2)
-  return 2 * R * Math.asin(Math.sqrt(h))
-}
 
 export function pathDistanceNm(path: Coordinate[]): number {
   let total = 0
@@ -73,11 +54,6 @@ export function pathDistanceNm(path: Coordinate[]): number {
 
 /**
  * Builds a plausible optimal route between two points.
- *
- * Rather than a straight line, this bows the path perpendicular to the track and
- * adds a small deterministic wobble, so it reads like a route that responded to
- * currents and weather. Deterministic on the inputs — the same request always
- * produces the same route, which matters for a demo you rehearse.
  */
 export function generateMockRoute(
   start: Coordinate,
@@ -89,7 +65,6 @@ export function generateMockRoute(
   const dLat = destination.latitude - start.latitude
   const dLon = destination.longitude - start.longitude
 
-  // Unit normal to the great-circle track, used to offset intermediate points.
   const len = Math.hypot(dLat, dLon) || 1
   const normalLat = -dLon / len
   const normalLon = dLat / len
@@ -98,7 +73,6 @@ export function generateMockRoute(
 
   for (let i = 1; i < waypoints - 1; i += 1) {
     const t = i / (waypoints - 1)
-    // Sine envelope: zero deflection at both ends, maximum mid-voyage.
     const envelope = Math.sin(t * Math.PI)
     const wobble = Math.sin(t * Math.PI * 3 + seed) * 0.18
     const offset = bow * envelope * (1 + wobble)
@@ -113,35 +87,40 @@ export function generateMockRoute(
   return path
 }
 
-function buildLegs(path: Coordinate[], departure: Date, speedKn: number): RouteLeg[] {
+function buildLegs(path: Coordinate[], speedKn: number): RouteLeg[] {
   const legs: RouteLeg[] = []
-  let elapsedHours = 0
 
   for (let i = 0; i < path.length - 1; i += 1) {
     const from = path[i]!
     const to = path[i + 1]!
     const distance = haversineNm(from, to)
     const hours = distance / speedKn
-    elapsedHours += hours
+    const bearing = bearingDeg(from, to)
 
-    // Environmental values drift smoothly along the route so the UI shows
-    // variation rather than a constant.
     const phase = i / Math.max(path.length - 2, 1)
     legs.push({
       from,
       to,
       distance_nm: Number(distance.toFixed(2)),
       travel_time_hours: Number(hours.toFixed(2)),
-      eta: new Date(departure.getTime() + elapsedHours * 3600_000).toISOString(),
+      bearing: Number(bearing.toFixed(1)),
       cost: Number((2.1 + Math.sin(phase * Math.PI * 2) * 0.55).toFixed(4)),
-      environment: {
-        wind_speed_kn: Number((15 + Math.sin(phase * 3.1) * 5.2).toFixed(1)),
-        wind_direction_deg: Number((255 + Math.sin(phase * 2) * 12).toFixed(0)),
-        wave_height_m: Number((2.3 + Math.sin(phase * 2.4) * 0.6).toFixed(2)),
-        wave_period_s: Number((9.4 + Math.cos(phase * 2) * 0.8).toFixed(1)),
-        current_speed_kn: Number((0.3 + Math.sin(phase * 4) * 0.15).toFixed(2)),
-        current_direction_deg: Number((128 + Math.cos(phase * 3) * 20).toFixed(0)),
-      },
+      wind_speed_kn: Number((15 + Math.sin(phase * 3.1) * 5.2).toFixed(1)),
+      wind_direction_deg: Number((255 + Math.sin(phase * 2) * 12).toFixed(0)),
+      wave_height_m: Number((2.3 + Math.sin(phase * 2.4) * 0.6).toFixed(2)),
+      wave_period_s: Number((9.4 + Math.cos(phase * 2) * 0.8).toFixed(1)),
+      current_speed_kn: Number((0.3 + Math.sin(phase * 4) * 0.15).toFixed(2)),
+      current_direction_deg: Number((128 + Math.cos(phase * 3) * 20).toFixed(0)),
+      relative_wind_dir: 45,
+      relative_current_dir: 30,
+      along_track_current_kn: Number((0.2 + Math.sin(phase * 3) * 0.3).toFixed(2)),
+      effective_speed_kn: speedKn + 0.2,
+      time_score: 0.25,
+      fuel_score: 0.3,
+      wind_score: 0.2,
+      wave_score: 0.35,
+      current_score: 0.15,
+      safety_score: 0.1,
     })
   }
 
@@ -160,18 +139,16 @@ export function mockShip(imo: string): ShipResponse {
     name: vessel.name,
     status: 'underway',
     position: DEMO_SHIP_POSITION,
-    // ADDENDUM fields: deliberately incomplete, so the manual-entry flow that
-    // reacts to `missing_fields` is exercised during mock development.
     ship: {
       ship_type: vessel.type,
       length_m: 294,
       beam_m: 32.2,
-      draft_m: null,
+      draft_m: 12.0,
       cruising_speed_kn: 18,
-      max_speed_kn: null,
+      max_speed_kn: 23,
     },
     source: 'defaults',
-    missing_fields: ['draft_m', 'max_speed_kn'],
+    missing_fields: [],
   }
 }
 
@@ -187,7 +164,6 @@ export function mockRoutePreview(
   const hours = distance / speed
   const departure = departureTime ? new Date(departureTime) : new Date()
 
-  // Direct-route baseline, so the efficiency figure has something to compare to.
   const directDistance = haversineNm(start, destination)
   const totalCost = Number((distance * 0.1385).toFixed(2))
   const baselineCost = Number((directDistance * 0.169).toFixed(2))
@@ -203,7 +179,7 @@ export function mockRoutePreview(
     eta: new Date(departure.getTime() + hours * 3600_000).toISOString(),
     baseline_cost: baselineCost,
     efficiency_gain_percent: Number((((baselineCost - totalCost) / baselineCost) * 100).toFixed(1)),
-    legs: buildLegs(path, departure, speed),
+    legs: buildLegs(path, speed),
   }
 }
 
@@ -239,7 +215,7 @@ export function mockCurrentRoute(imo: string, from?: Coordinate): CurrentRouteRe
     updated_at: new Date().toISOString(),
     destination,
     baseline_cost: Number((haversineNm(start, destination) * 0.169).toFixed(2)),
-    legs: buildLegs(path, new Date(), 18),
+    legs: buildLegs(path, 18),
   }
 }
 
@@ -274,18 +250,4 @@ export function mockStormAlerts(near: Coordinate): RouteAlert[] {
       detected_at: new Date().toISOString(),
     },
   ]
-}
-
-/** Offsets a coordinate by a distance in nautical miles along a bearing. */
-export function offsetCoordinate(origin: Coordinate, bearingDeg: number, distanceNm: number): Coordinate {
-  const bearing = (bearingDeg * Math.PI) / 180
-  const dLat = (distanceNm * Math.cos(bearing)) / NM_PER_DEG_LAT
-  const dLon =
-    (distanceNm * Math.sin(bearing)) /
-    (NM_PER_DEG_LAT * Math.cos((origin.latitude * Math.PI) / 180))
-
-  return {
-    latitude: Number((origin.latitude + dLat).toFixed(5)),
-    longitude: Number((origin.longitude + dLon).toFixed(5)),
-  }
 }

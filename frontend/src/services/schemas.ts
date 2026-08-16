@@ -49,6 +49,9 @@ export const shipResponseSchema = z.object({
   // Null is the honest, common case: no live AIS transponder report.
   position: coordinateSchema.nullable(),
   ship: shipProfileSchema.optional(),
+  // Provenance — tells the frontend whether this is real AIS data
+  is_live_position: z.boolean().optional(),
+  position_source: z.string().optional(),
 })
 
 const optionalNumber = z.number().nullable().optional()
@@ -117,9 +120,12 @@ export const trackingStopResponseSchema = trackingStartResponseSchema
 export const shipStatusResponseSchema = z.object({
   imo_number: z.string(),
   status: shipStatusSchema,
-  position: coordinateSchema,
+  // Nullable — no AIS fix means null, never a fake fallback coordinate
+  position: coordinateSchema.nullable(),
   timestamp: isoTimestampSchema,
   destination: coordinateSchema.nullable().optional(),
+  is_live_position: z.boolean().optional(),
+  position_source: z.string().optional(),
 })
 
 export const currentRouteResponseSchema = z.object({
@@ -144,18 +150,37 @@ export const routeUpdateMessageSchema = z.object({
   total_cost: z.number(),
   reason: z.string(),
   legs: z.array(routeLegSchema).optional(),
+  position_source: z.string().optional(),
+  is_live_position: z.boolean().optional(),
 })
 
 export const positionUpdateMessageSchema = z.object({
   type: z.literal('position_update'),
   timestamp: isoTimestampSchema,
   position: coordinateSchema,
+  position_source: z.string().optional(),
+  is_live_position: z.boolean().optional(),
+  speed_kn: z.number().nullable().optional(),
+  heading_deg: z.number().nullable().optional(),
+})
+
+export const aisTrackPointSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  timestamp: isoTimestampSchema,
+})
+
+export const aisTrackResponseSchema = z.object({
+  imo_number: z.string(),
+  source: z.string(),
+  track: z.array(aisTrackPointSchema),
 })
 
 export const liveMessageSchema = z.discriminatedUnion('type', [
   routeUpdateMessageSchema,
   positionUpdateMessageSchema,
 ])
+
 
 export const apiErrorResponseSchema = z.object({ error: apiErrorDetailSchema })
 

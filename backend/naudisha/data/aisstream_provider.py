@@ -41,6 +41,9 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from dotenv import find_dotenv, load_dotenv
+load_dotenv(find_dotenv(usecwd=True))
+
 from naudisha.data.vessel_provider import AISDataRecord, AISProvider
 
 logger = logging.getLogger("naudisha.data.aisstream")
@@ -114,13 +117,26 @@ class AISStreamProvider(AISProvider):
         self._stop_event = threading.Event()
         self._connected = False
         self._messages_seen = 0
+        self._position_messages_seen = 0
+        self._static_messages_seen = 0
+        self._reconnect_count = 0
+        self._last_message_timestamp: Optional[str] = None
+        self._last_position_timestamp: Optional[str] = None
         self._last_error: Optional[str] = None
 
     # -- public state ------------------------------------------------------
 
     @property
+    def effective_api_key(self) -> str:
+        if self.api_key is not None:
+            return self.api_key
+        return os.environ.get("AISSTREAM_API_KEY", "").strip()
+
+    @property
     def enabled(self) -> bool:
         return bool(self.api_key)
+
+
 
     @property
     def connected(self) -> bool:
@@ -130,13 +146,20 @@ class AISStreamProvider(AISProvider):
     def stats(self) -> Dict[str, Any]:
         """Diagnostics — surfaced so 'no position' can be explained precisely."""
         with self._lock:
+            sample_imos = list(self._imo_to_mmsi.keys())[-10:] if self._imo_to_mmsi else []
             return {
                 "enabled": self.enabled,
                 "connected": self._connected,
                 "messages_seen": self._messages_seen,
+                "position_messages_seen": self._position_messages_seen,
+                "static_messages_seen": self._static_messages_seen,
                 "vessels_with_position": len(self._positions_by_mmsi),
                 "imo_mappings": len(self._imo_to_mmsi),
+                "last_message_timestamp": self._last_message_timestamp,
+                "last_position_timestamp": self._last_position_timestamp,
                 "last_error": self._last_error,
+                "reconnect_count": self._reconnect_count,
+                "sample_imo_mappings": sample_imos,
             }
 
     def mapping_size(self) -> int:
@@ -247,35 +270,43 @@ class AISStreamProvider(AISProvider):
         except ImportError:  # pragma: no cover - dependency is declared
             with self._lock:
                 self._last_error = "websockets package not installed"
-            logger.warning("AISStream requires the 'websockets' package")
+            logger.warning("[AIS] websockets package not installed")
             self._stop_event.set()
             return
 
-        # ping_interval=None: AISStream does not reply to WebSocket ping frames,
-        # so client-side keepalive tears down a perfectly healthy connection
-        # after one interval with "1011 keepalive ping timeout". Liveness is
-        # instead enforced by the recv() timeout below.
+        key = self.effective_api_key
+        if not key:
+            with self._lock:
+                self._last_error = "AISSTREAM_API_KEY not configured"
+            logger.warning("[AIS] Cannot connect — AISSTREAM_API_KEY is not configured")
+            self._stop_event.set()
+            return
+
+        logger.info("[AIS] Connecting to %s ...", self.url)
         async with websockets.connect(self.url, ping_interval=None) as socket:
-            await socket.send(
-                json.dumps(
-                    {
-                        "APIKey": self.api_key,
-                        "BoundingBoxes": self.bounding_boxes,
-                        # Both types are needed: PositionReport carries the fix,
-                        # ShipStaticData is the only source of the IMO number.
-                        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
-                    }
-                )
-            )
+            sub_payload = {
+                "APIKey": key,
+                "BoundingBoxes": self.bounding_boxes,
+                "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+            }
+            await socket.send(json.dumps(sub_payload))
 
             with self._lock:
                 self._connected = True
                 self._last_error = None
-            logger.info("AISStream connected — subscribed to global position and static data")
+                self._reconnect_count += 1
+            logger.info("[AIS] Connected & subscription accepted — streaming global AIS")
 
             while not self._stop_event.is_set():
-                raw = await asyncio.wait_for(socket.recv(), timeout=90)
-                self.ingest_raw(raw)
+                try:
+                    raw = await asyncio.wait_for(socket.recv(), timeout=90)
+                    if self._messages_seen == 0:
+                        logger.info("[AIS] First raw frame received from stream (%d bytes)", len(str(raw)))
+                    self.ingest_raw(raw)
+                except asyncio.TimeoutError:
+                    logger.warning("[AIS] recv timed out after 90s — reconnecting")
+                    break
+
 
     # -- message handling (public for testing) -----------------------------
 
@@ -289,12 +320,30 @@ class AISStreamProvider(AISProvider):
             self.ingest_message(payload)
 
     def ingest_message(self, payload: Dict[str, Any]) -> None:
-        with self._lock:
-            self._messages_seen += 1
-
+        now_iso = _utc_now_iso()
         message_type = payload.get("MessageType")
         metadata = payload.get("MetaData") or {}
         body = payload.get("Message") or {}
+
+        with self._lock:
+            self._messages_seen += 1
+            self._last_message_timestamp = now_iso
+            count = self._messages_seen
+
+            if message_type == "PositionReport":
+                self._position_messages_seen += 1
+                self._last_position_timestamp = now_iso
+            elif message_type == "ShipStaticData":
+                self._static_messages_seen += 1
+
+            # Log milestones
+            if count in (1, 10, 50, 100, 250) or count % 500 == 0:
+                n_pos = len(self._positions_by_mmsi)
+                n_imo = len(self._imo_to_mmsi)
+                logger.info(
+                    "[AIS] Ingestion active: %d total msgs (%d pos, %d static), %d positions cached, %d IMO mappings",
+                    count, self._position_messages_seen, self._static_messages_seen, n_pos, n_imo,
+                )
 
         mmsi = metadata.get("MMSI") or metadata.get("mmsi")
         if mmsi is None:
@@ -316,8 +365,12 @@ class AISStreamProvider(AISProvider):
             return
 
         with self._lock:
+            already_known = imo in self._imo_to_mmsi
             self._mmsi_to_imo[mmsi] = imo
             self._imo_to_mmsi[imo] = mmsi
+
+            if not already_known:
+                logger.info("[AIS] IMO mapped — MMSI=%s IMO=%s name=%s", mmsi, imo, static.get("Name", "?"))
 
             # Backfill the IMO onto a position already received for this MMSI,
             # so a vessel seen before its static broadcast becomes resolvable
@@ -325,20 +378,22 @@ class AISStreamProvider(AISProvider):
             existing = self._positions_by_mmsi.get(mmsi)
             if existing is not None and existing[0].imo_number is None:
                 record, received_at = existing
-                self._positions_by_mmsi[mmsi] = (
-                    AISDataRecord(
-                        mmsi=record.mmsi,
-                        imo_number=imo,
-                        latitude=record.latitude,
-                        longitude=record.longitude,
-                        speed_kn=record.speed_kn,
-                        course_deg=record.course_deg,
-                        heading_deg=record.heading_deg,
-                        nav_status=record.nav_status,
-                        timestamp_utc=record.timestamp_utc,
-                        source="aisstream",
-                    ),
-                    received_at,
+                updated = AISDataRecord(
+                    mmsi=record.mmsi,
+                    imo_number=imo,
+                    latitude=record.latitude,
+                    longitude=record.longitude,
+                    speed_kn=record.speed_kn,
+                    course_deg=record.course_deg,
+                    heading_deg=record.heading_deg,
+                    nav_status=record.nav_status,
+                    timestamp_utc=record.timestamp_utc,
+                    source="aisstream",
+                )
+                self._positions_by_mmsi[mmsi] = (updated, received_at)
+                logger.info(
+                    "[AIS] position backfilled — MMSI=%s IMO=%s lat=%.4f lon=%.4f",
+                    mmsi, imo, record.latitude, record.longitude,
                 )
 
     def _ingest_position(self, mmsi: str, metadata: Dict[str, Any], report: Dict[str, Any]) -> None:
@@ -388,6 +443,16 @@ class AISStreamProvider(AISProvider):
             )
             self._positions_by_mmsi[mmsi] = (record, time.time())
             self._evict_if_needed()
+
+            # Detailed position log only when we know the IMO (i.e. tracked vessel)
+            if imo is not None:
+                logger.debug(
+                    "[AIS] position update — MMSI=%s IMO=%s lat=%.4f lon=%.4f sog=%s cog=%s",
+                    mmsi, imo, lat, lon,
+                    f"{sog:.1f}kn" if sog is not None else "?",
+                    f"{cog:.0f}°" if cog is not None else "?",
+                )
+
 
     def _evict_if_needed(self) -> None:
         """Drops the oldest fixes once the snapshot exceeds its bound. Caller holds the lock."""

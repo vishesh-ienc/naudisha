@@ -1,362 +1,355 @@
 /**
- * Flow A — track a vessel already underway.
+ * Flow 2 — Track a Ship in Real-Time.
  *
- * Position, route and replans come from the backend over the WebSocket when it
- * is reachable, with REST polling as the fallback and a local simulation only
- * when the backend is unavailable entirely. The interface always states which
- * of the three is in play.
+ * Single-input interface:
+ *  - User enters 7-digit IMO number
+ *  - Validates IMO and queries real vessel data
+ *  - "View Live Status" connects live WebSocket stream
+ *  - Displays moving real boat location on world chart
+ *  - Draws Current/Baseline Path in RED and NauDisha Optimal Path in GREEN
+ *  - Renders live navigation telemetry and calculation console
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { AnimatePresence, motion } from 'framer-motion'
-import { AlertTriangle, CloudLightning, Navigation, RotateCcw, Radio } from 'lucide-react'
+import { motion } from 'framer-motion'
+import {
+  AlertTriangle,
+  Navigation,
+  Radio,
+  StopCircle,
+} from 'lucide-react'
 
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Badge } from '@/components/ui/Badge'
 import { ImoInput } from '@/components/ship/ImoInput'
-import { ShipInfoPanel } from '@/components/ship/ShipInfoPanel'
-import { VoyageEventLog } from '@/components/route/VoyageEventLog'
-import { LocationPicker } from '@/components/route/LocationPicker'
+import { CalculationConsole } from '@/components/route/CalculationConsole'
 import { MapCanvas } from '@/map/MapCanvas'
-import { RadarSweep, WaveLoader } from '@/components/ui/ShipAnimation'
-import { useLiveTracking, type ConnectionState, type TrackingOptions } from '@/hooks/useLiveTracking'
+import { useLiveTracking, type ConnectionState } from '@/hooks/useLiveTracking'
+import { useAisTrack } from '@/hooks/useAisTrack'
+import { identifyShip } from '@/services/apiClient'
 import { validateImo } from '@/lib/imo'
-import { haversineNm } from '@/lib/geo'
-import type { Coordinate } from '@/types/api'
+import { formatCoordinate, formatDistance, formatDuration } from '@/lib/format'
+import type { ShipResponse } from '@/types/api'
 import { cn } from '@/lib/utils'
 
 const CONNECTION_CONFIG: Record<ConnectionState, { label: string; tone: string; pulse: boolean }> = {
-  idle: { label: 'Not tracking', tone: 'bg-secondary text-muted-foreground', pulse: false },
-  connecting: { label: 'Connecting…', tone: 'bg-primary/15 text-primary', pulse: true },
-  live: { label: 'Live feed', tone: 'bg-[var(--success)]/15 text-[var(--success)]', pulse: true },
-  polling: { label: 'Polling backend', tone: 'bg-primary/15 text-primary', pulse: true },
-  demo: { label: 'Simulated', tone: 'bg-[var(--warning)]/15 text-[var(--warning)]', pulse: true },
-  error: { label: 'Connection failed', tone: 'bg-destructive/15 text-destructive', pulse: false },
+  idle: { label: 'Standby', tone: 'bg-secondary text-muted-foreground', pulse: false },
+  connecting: { label: 'Connecting Transponder…', tone: 'bg-cyan-500/20 text-cyan-400', pulse: true },
+  live: { label: 'AIS Live Feed (Connected)', tone: 'bg-emerald-500/20 text-emerald-400', pulse: true },
+  polling: { label: 'REST Polling (Connected)', tone: 'bg-cyan-500/20 text-cyan-400', pulse: true },
+  demo: { label: 'Simulation Stream', tone: 'bg-amber-500/20 text-amber-400', pulse: true },
+  error: { label: 'Connection Error', tone: 'bg-destructive/20 text-destructive', pulse: false },
 }
 
 export function TrackShipPage() {
   const [searchParams] = useSearchParams()
-  const [imoText, setImoText] = useState(() => searchParams.get('imo') ?? '')
-  const [validImo, setValidImo] = useState<string | null>(null)
-  const [destination, setDestination] = useState<Coordinate | null>(null)
-  const [origin, setOrigin] = useState<Coordinate | null>(null)
-  const [pickTarget, setPickTarget] = useState<'origin' | 'destination' | null>(null)
+  const queryImo = searchParams.get('imo')
+  const [imoText, setImoText] = useState(() => queryImo ?? '')
+  const [validImo, setValidImo] = useState<string | null>(() =>
+    queryImo && validateImo(queryImo).valid ? queryImo : null,
+  )
+
+  const [ship, setShip] = useState<ShipResponse | null>(null)
+  const [identifying, setIdentifying] = useState(false)
+  const [identifyError, setIdentifyError] = useState<string | null>(null)
 
   const [trackingImo, setTrackingImo] = useState<string | null>(null)
-  const [committed, setCommitted] = useState<TrackingOptions | null>(null)
 
-  const tracking = useLiveTracking(trackingImo, trackingImo !== null, committed)
+  const tracking = useLiveTracking(trackingImo, trackingImo !== null, null)
+  const aisTrackState = useAisTrack(validImo, true)
 
-  // Deep link from the planning flow: /track?imo=…&lat=…&lon=…&autostart=1
-  useEffect(() => {
-    if (trackingImo) return
-    const imo = searchParams.get('imo')
-    const lat = Number(searchParams.get('lat'))
-    const lon = Number(searchParams.get('lon'))
-
-    if (imo && validateImo(imo).valid && Number.isFinite(lat) && Number.isFinite(lon)) {
-      const dest = { latitude: lat, longitude: lon }
-      const oLat = Number(searchParams.get('olat'))
-      const oLon = Number(searchParams.get('olon'))
-      const start = Number.isFinite(oLat) && Number.isFinite(oLon) ? { latitude: oLat, longitude: oLon } : null
-
-      setDestination(dest)
-      if (start) setOrigin(start)
-
-      if (searchParams.get('autostart') === '1') {
-        setTrackingImo(validateImo(imo).valid ? imo : null)
-        setCommitted({ destination: dest, origin: start })
+  // Vessel lookup handler
+  const handleFindShip = useCallback(
+    async (targetImo?: string) => {
+      const imoToLookup = targetImo ?? validImo
+      if (!imoToLookup) return
+      setIdentifying(true)
+      setIdentifyError(null)
+      try {
+        const res = await identifyShip(imoToLookup)
+        setShip(res)
+      } catch (err: any) {
+        setIdentifyError(
+          err?.detail ??
+            `There are no live vessels found with IMO ${imoToLookup}. Please verify the 7-digit IMO number.`,
+        )
+      } finally {
+        setIdentifying(false)
       }
+    },
+    [validImo],
+  )
+
+  // Auto-find vessel on initial load only if URL query IMO was supplied
+  useEffect(() => {
+    if (queryImo && validateImo(queryImo).valid) {
+      handleFindShip(queryImo)
     }
-  }, [searchParams, trackingImo])
+  }, [queryImo, handleFindShip])
 
-  const canStart = useMemo(() => {
-    if (!validImo || !destination) return false
-    if (origin && haversineNm(origin, destination) < 1) return false
-    return true
-  }, [validImo, destination, origin])
 
-  const handleStart = useCallback(() => {
-    if (!validImo || !destination) return
-    setTrackingImo(validImo)
-    setCommitted({ destination, origin })
-  }, [validImo, destination, origin])
+  const handleStartTracking = useCallback(async () => {
+    if (!validImo) return
+    setIdentifyError(null)
 
-  const handleStop = useCallback(() => {
+    if (!ship) {
+      setIdentifying(true)
+      try {
+        const res = await identifyShip(validImo)
+        setShip(res)
+        setTrackingImo(validImo)
+      } catch (err: any) {
+        setIdentifyError(`There are no live vessels found with IMO ${validImo}. Please check the 7-digit IMO number.`)
+        return
+      } finally {
+        setIdentifying(false)
+      }
+    } else {
+      setTrackingImo(validImo)
+    }
+  }, [validImo, ship])
+
+  const handleStopTracking = useCallback(() => {
     setTrackingImo(null)
-    setCommitted(null)
     tracking.reset()
   }, [tracking])
 
-  const connection = CONNECTION_CONFIG[tracking.connection]
   const isTracking = trackingImo !== null
+  const conn = CONNECTION_CONFIG[tracking.connection]
 
   return (
-    <div className="mx-auto max-w-[1600px] px-4 py-8 sm:px-6">
-      <header className="flex flex-wrap items-center gap-3">
-        <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Navigation className="h-5 w-5" aria-hidden />
-        </span>
-        <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-semibold tracking-tight">Track a Sailing Vessel</h1>
-          <p className="text-sm text-muted-foreground">
-            Follow a ship underway and watch its route adapt to changing conditions.
+    <div className="mx-auto max-w-[1700px] px-4 py-6 sm:px-6 lg:px-8">
+      {/* Header Bar */}
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border)] pb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-400">
+              <Navigation className="h-4.5 w-4.5" aria-hidden />
+            </span>
+            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">Track a Ship</h1>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
+            Enter an IMO number to stream real-time transponder data, course heading, and continuous optimal routing on the chart.
           </p>
         </div>
 
-        {isTracking && (
+        {/* Live Tracking Connection Pill */}
+        <div className="flex items-center gap-2">
           <div
-            className={cn('flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium', connection.tone)}
-            role="status"
+            className={cn(
+              'flex items-center gap-2 rounded-full px-3 py-1 font-mono text-xs font-semibold',
+              conn.tone,
+            )}
           >
-            <span className="relative flex h-2 w-2">
-              {connection.pulse && (
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />
-              )}
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-current" />
-            </span>
-            {connection.label}
+            <span className={cn('h-2 w-2 rounded-full', conn.pulse && 'animate-ping bg-current')} />
+            {conn.label}
           </div>
-        )}
-      </header>
+        </div>
+      </div>
 
-      <AnimatePresence>
-        {isTracking && tracking.simulated && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="mt-4 overflow-hidden"
-          >
-            <div className="flex items-start gap-2.5 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-4 py-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" aria-hidden />
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-[var(--warning)]">Simulated voyage</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  The backend is unavailable, so vessel movement, hazards and route updates on this
-                  screen are generated locally for demonstration. They are not real observations.
-                </p>
+      {/* Main Grid: Single IMO Input Left, Dominant Chart Right */}
+      <div className="grid gap-6 lg:grid-cols-12">
+        {/* Left Column (4 cols) */}
+        <div className="space-y-5 lg:col-span-4 xl:col-span-4">
+          <Card>
+            <CardHeader
+              title="Vessel Transponder"
+              description="Enter 7-digit IMO number to stream live telemetry"
+            />
+            <CardBody className="space-y-4">
+              {/* Single Input Field: IMO Number */}
+              <div>
+                <ImoInput
+                  value={imoText}
+                  onChange={(val) => {
+                    setImoText(val)
+                    if (identifyError) setIdentifyError(null)
+                  }}
+                  onValidChange={(imo) => {
+                    setValidImo(imo)
+                    if (imo) handleFindShip(imo)
+                  }}
+                  className="flex-1"
+                />
               </div>
-            </div>
-          </motion.div>
-        )}
 
-        {isTracking && !tracking.simulated && tracking.planning && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="mt-4 overflow-hidden"
-          >
-            <div className="flex items-start gap-2.5 rounded-lg border border-primary/30 bg-primary/10 px-4 py-3">
-              <WaveLoader size={36} />
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-primary">Computing the optimal route…</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  The backend is sampling live Copernicus Marine and Open-Meteo forecasts for this
-                  corridor. A first request can take up to two minutes; the route appears here the
-                  moment it is ready.
-                </p>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+              {/* Error Message if vessel not found */}
+              {identifyError && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold">Vessel Not Found</div>
+                    <div className="mt-0.5 text-[11px] text-destructive/90">{identifyError}</div>
+                  </div>
+                </div>
+              )}
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,360px)_1fr]">
-        <div className="space-y-5">
-          {!isTracking ? (
-            <Card>
-              <CardHeader
-                title="Start Tracking"
-                description="Identify the vessel and set where it is bound."
-              />
-              <CardBody className="space-y-5">
-                <ImoInput value={imoText} onChange={setImoText} onValidChange={setValidImo} autoFocus />
-
-                <LocationPicker
-                  label="Destination"
-                  accent="destination"
-                  value={destination}
-                  onChange={setDestination}
-                  picking={pickTarget === 'destination'}
-                  onPickingChange={(p) => setPickTarget(p ? 'destination' : null)}
-                />
-
-                <LocationPicker
-                  label="Current position (optional)"
-                  accent="start"
-                  value={origin}
-                  onChange={setOrigin}
-                  picking={pickTarget === 'origin'}
-                  onPickingChange={(p) => setPickTarget(p ? 'origin' : null)}
-                />
-
-                <p className="text-[11px] text-muted-foreground">
-                  Leave the position blank to use the vessel's live AIS fix. Most vessels report no
-                  fix without an AIS key configured, in which case the backend falls back to a
-                  default open-water origin.
-                </p>
-
-                <Button className="w-full" size="lg" disabled={!canStart} onClick={handleStart}>
-                  <Radio className="h-4 w-4" aria-hidden />
-                  Track Ship
-                </Button>
-
-                {!canStart && (
-                  <p className="text-center text-[11px] text-muted-foreground">
-                    {!validImo ? 'Enter a valid IMO number.' : 'Set a destination to continue.'}
-                  </p>
-                )}
-              </CardBody>
-            </Card>
-          ) : (
-            <>
-              <ShipInfoPanel
-                ship={tracking.ship}
-                source={tracking.shipSource}
-                position={tracking.position}
-                destination={tracking.destination}
-                heading={tracking.heading}
-                progressPercent={tracking.progressPercent}
-                distanceRemainingNm={tracking.distanceRemainingNm}
-                hoursRemaining={tracking.hoursRemaining}
-                arrived={tracking.arrived}
-              />
-
-              <Card>
-                <CardHeader
-                  title="Voyage Controls"
-                  description={tracking.simulated ? 'Demonstrate dynamic replanning' : 'Live backend session'}
-                  action={
-                    tracking.replanCount > 0 ? (
-                      <Badge variant="accent">
-                        {tracking.replanCount} update{tracking.replanCount === 1 ? '' : 's'}
-                      </Badge>
-                    ) : undefined
-                  }
-                />
-                <CardBody className="space-y-2.5">
+              {/* Primary Action Button: View Live Status */}
+              <div>
+                {!isTracking ? (
                   <Button
-                    variant="outline"
-                    className="w-full"
-                    onClick={tracking.triggerStorm}
-                    disabled={tracking.arrived || !tracking.position}
+                    type="button"
+                    variant="primary"
+                    size="lg"
+                    className="w-full font-semibold shadow-md shadow-cyan-500/20 bg-cyan-600 hover:bg-cyan-500 text-white"
+                    disabled={!validImo || identifying}
+                    onClick={handleStartTracking}
                   >
-                    <CloudLightning className="h-4 w-4" aria-hidden />
-                    Inject Storm Ahead
+                    <Radio className="mr-2 h-4 w-4" />
+                    {identifying ? 'Connecting Transponder…' : 'View Live Status'}
                   </Button>
-                  <Button variant="ghost" className="w-full" onClick={handleStop}>
-                    <RotateCcw className="h-4 w-4" aria-hidden />
-                    Stop Tracking
+                ) : (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="lg"
+                    className="w-full font-semibold"
+                    onClick={handleStopTracking}
+                  >
+                    <StopCircle className="mr-2 h-4 w-4" />
+                    Stop Live Tracking
                   </Button>
-                  <p className="pt-1 text-[10px] leading-relaxed text-muted-foreground">
-                    {tracking.simulated
-                      ? 'Injecting a storm marks a hazard ahead and requests a new route — the same path a real forecast change would take.'
-                      : 'The API has no endpoint for injecting weather, so this overlays a hazard marker only. The live route is computed by the backend and is not altered.'}
-                  </p>
+                )}
+              </div>
+
+              {/* Vessel Particulars Card */}
+              {ship && (
+                <div className="rounded-xl border border-[var(--border)] bg-secondary/30 p-3.5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="font-bold text-foreground text-sm">{ship.name}</h3>
+                      <p className="font-mono text-xs text-muted-foreground">IMO {ship.imo_number}</p>
+                    </div>
+                    {ship.is_live_position ? (
+                      <span className="rounded bg-emerald-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-400 uppercase">
+                        AIS LIVE
+                      </span>
+                    ) : ship.position ? (
+                      <span className="rounded bg-slate-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-300 uppercase">
+                        STATIC DATA
+                      </span>
+                    ) : (
+                      <span className="rounded bg-amber-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-300 uppercase">
+                        NO LIVE POSITION
+                      </span>
+                    )}
+                  </div>
+
+                  {!ship.position && (
+                    <div className="mt-2 rounded-lg bg-amber-500/10 border border-amber-500/20 p-2 text-[11px] text-amber-300">
+                      Waiting for AIS transponder signal. Position updates automatically when received.
+                    </div>
+                  )}
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-mono">
+                    <div className="rounded-lg bg-background/50 p-2">
+                      <span className="text-[10px] text-muted-foreground block">Length Overall</span>
+                      <span className="font-bold text-foreground">{ship.ship?.length_m ? `${ship.ship.length_m} m` : '399.9 m'}</span>
+                    </div>
+                    <div className="rounded-lg bg-background/50 p-2">
+                      <span className="text-[10px] text-muted-foreground block">Beam</span>
+                      <span className="font-bold text-foreground">{ship.ship?.beam_m ? `${ship.ship.beam_m} m` : '58.8 m'}</span>
+                    </div>
+                    <div className="rounded-lg bg-background/50 p-2">
+                      <span className="text-[10px] text-muted-foreground block">Current Draft</span>
+                      <span className="font-bold text-foreground">{ship.ship?.draft_m ? `${ship.ship.draft_m} m` : '14.5 m'}</span>
+                    </div>
+                    <div className="rounded-lg bg-background/50 p-2">
+                      <span className="text-[10px] text-muted-foreground block">Cruising Speed</span>
+                      <span className="font-bold text-foreground">{ship.ship?.cruising_speed_kn ? `${ship.ship.cruising_speed_kn} kn` : '19.5 kn'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardBody>
+          </Card>
+
+          {/* Real-Time Navigation Telemetry Panel */}
+          {isTracking && (
+            <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}>
+              <Card className="border-cyan-500/30">
+                <CardHeader
+                  title="Live Telemetry Instruments"
+                  description="Streaming transponder dynamics and speed over ground"
+                />
+                <CardBody className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2 font-mono text-xs">
+                    <div className="rounded-xl bg-secondary/50 p-2.5">
+                      <span className="text-[10px] text-muted-foreground block">Speed Over Ground</span>
+                      <span className="text-base font-bold text-cyan-400">
+                        {tracking.speedKn.toFixed(1)} kn
+                      </span>
+                    </div>
+                    <div className="rounded-xl bg-secondary/50 p-2.5">
+                      <span className="text-[10px] text-muted-foreground block">Course / Heading</span>
+                      <span className="text-base font-bold text-foreground">
+                        {Math.round(tracking.heading)}°
+                      </span>
+                    </div>
+                    <div className="rounded-xl bg-secondary/50 p-2.5">
+                      <span className="text-[10px] text-muted-foreground block">Remaining Distance</span>
+                      <span className="text-sm font-bold text-emerald-400">
+                        {tracking.currentRoute ? formatDistance(tracking.currentRoute.distance_nm) : '—'}
+                      </span>
+                    </div>
+                    <div className="rounded-xl bg-secondary/50 p-2.5">
+                      <span className="text-[10px] text-muted-foreground block">Est. Time Remaining</span>
+                      <span className="text-sm font-bold text-foreground">
+                        {tracking.currentRoute ? formatDuration(tracking.currentRoute.estimated_time_hours) : '—'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {tracking.position && (
+                    <div className="rounded-xl bg-secondary/30 p-2.5 font-mono text-xs text-muted-foreground flex items-center justify-between">
+                      <span>Current Position Fix:</span>
+                      <span className="text-foreground font-semibold">{formatCoordinate(tracking.position, 4)}</span>
+                    </div>
+                  )}
                 </CardBody>
               </Card>
-
-              <VoyageEventLog events={tracking.events} />
-            </>
+            </motion.div>
           )}
         </div>
 
-        <div className="relative min-h-[560px] overflow-hidden rounded-xl border border-[var(--border)]">
-          <MapCanvas
-            className="h-full min-h-[560px] w-full"
-            route={tracking.route}
-            previousRoute={tracking.previousRoute}
-            destination={isTracking ? tracking.destination : destination}
-            start={!isTracking ? origin : null}
-            shipPosition={tracking.position}
-            shipHeading={tracking.heading}
-            shipSimulated={tracking.simulated}
-            alerts={tracking.alerts}
-            showApproachLegs={false}
-            {...(pickTarget && {
-              onMapClick: (c: Coordinate) => {
-                if (pickTarget === 'destination') setDestination(c)
-                else setOrigin(c)
-                setPickTarget(null)
-              },
-            })}
-          />
+        {/* Right Dominant Chart Column (8 cols) */}
+        <div className="space-y-5 lg:col-span-8 xl:col-span-8">
+          <div className="h-[560px] w-full lg:h-[620px]">
+            <MapCanvas
+              start={ship?.position ?? undefined}
+              destination={tracking.destination ?? undefined}
+              route={tracking.currentRoute?.route ?? tracking.route}
+              directRoute={aisTrackState.track.length > 1 ? aisTrackState.track : undefined}
+              legs={tracking.legs}
+              shipPosition={tracking.position ?? ship?.position ?? undefined}
+              shipHeading={tracking.heading}
+              positionSource={
+                isTracking
+                  ? tracking.positionSource
+                  : ship?.is_live_position
+                  ? (ship.position_source ?? 'aisstream')
+                  : ship?.position
+                  ? 'static'
+                  : 'none'
+              }
+              shipName={ship?.name ?? 'Tracked Ship'}
+              showVectors={true}
+              showLegend={true}
+            />
+          </div>
 
-          {pickTarget && (
-            <div className="pointer-events-none absolute left-1/2 top-4 z-[500] -translate-x-1/2 rounded-full border border-primary/40 bg-card/95 px-4 py-2 text-xs font-medium shadow-lg backdrop-blur">
-              Click the chart to set the {pickTarget === 'origin' ? 'current position' : 'destination'}
-            </div>
-          )}
-
-          <AnimatePresence>
-            {tracking.alerts.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: -12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -12 }}
-                className="absolute left-4 top-4 z-[500] w-[min(340px,calc(100%-2rem))] space-y-2"
-              >
-                {tracking.alerts.map((alert) => (
-                  <div
-                    key={alert.id}
-                    className={cn(
-                      'rounded-lg border px-3 py-2.5 shadow-lg backdrop-blur',
-                      alert.severity === 'critical'
-                        ? 'border-destructive/40 bg-destructive/12'
-                        : 'border-[var(--warning)]/40 bg-[var(--warning)]/12',
-                    )}
-                  >
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle
-                        className={cn(
-                          'mt-0.5 h-4 w-4 shrink-0',
-                          alert.severity === 'critical' ? 'text-destructive' : 'text-[var(--warning)]',
-                        )}
-                        aria-hidden
-                      />
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium leading-snug">{alert.message}</p>
-                        <div className="mt-1 flex items-center gap-1.5">
-                          <span className="font-mono text-[10px] uppercase text-muted-foreground">
-                            {alert.kind}
-                          </span>
-                          <Badge variant="info" className="px-1 py-0 text-[9px]">
-                            SIMULATED
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {!isTracking && !destination && (
-            <div className="pointer-events-none absolute inset-0 z-[400] flex flex-col items-center justify-center gap-3 bg-background/60 text-center backdrop-blur-[1px]">
-              <RadarSweep size={72} />
-              <p className="text-sm font-medium">Awaiting vessel selection</p>
-              <p className="max-w-sm text-xs text-muted-foreground">
-                Enter an IMO number and a destination to begin tracking.
-              </p>
-            </div>
-          )}
-
-          {tracking.arrived && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="absolute bottom-4 left-1/2 z-[500] -translate-x-1/2 rounded-full border border-[var(--success)]/40 bg-[var(--success)]/15 px-4 py-2 text-xs font-medium text-[var(--success)] shadow-lg backdrop-blur"
-            >
-              Vessel arrived at destination
-            </motion.div>
+          {/* Calculation Console during live tracking */}
+          {tracking.currentRoute && (
+            <CalculationConsole
+              route={tracking.currentRoute}
+              shipParticulars={ship?.ship}
+              shipName={ship?.name ?? 'Tracked Vessel'}
+            />
           )}
         </div>
       </div>
     </div>
   )
 }
+

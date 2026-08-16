@@ -31,8 +31,8 @@ export function RouteStatsPanel({ route, source, approachDistanceNm = 0, classNa
   const departure = 'departure_time' in route ? route.departure_time : undefined
   const baseline = route.baseline_cost
 
-  const efficiency =
-    'efficiency_gain_percent' in route && route.efficiency_gain_percent != null
+  const efficiency: number | null =
+    'efficiency_gain_percent' in route && typeof route.efficiency_gain_percent === 'number'
       ? route.efficiency_gain_percent
       : baseline != null && baseline > 0
         ? ((baseline - route.total_cost) / baseline) * 100

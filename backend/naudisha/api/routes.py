@@ -39,6 +39,9 @@ from naudisha.api.schemas import (
     TrackingStartRequest,
     TrackingStartResponse,
     TrackingStopResponse,
+    AISTrackPoint,
+    AISTrackResponse,
+    AISStatsResponse,
     validate_iso_8713_imo,
 )
 from naudisha.api.planning import planning_manager
@@ -47,9 +50,8 @@ from naudisha.api.tracking import tracking_manager
 from naudisha.core.models import ShipProfile
 from naudisha.data.vessel_provider import CompositeVesselProvider, VesselProvider
 
-# Fallback origin used when a vessel has no AIS position and the caller supplied
-# none. Open water on the Mumbai approaches — the corridor the routing engine is
-# verified against — rather than a coastal point that would route through land.
+# DEFAULT_ORIGIN is kept only for route planning seed coordinates in tests.
+# It MUST NOT be used as a vessel position fallback in any response.
 DEFAULT_ORIGIN = (18.52, 72.55)
 
 # -----------------------------------------------------------------------------
@@ -386,6 +388,8 @@ def identify_ship(
         status=vessel.status,
         position=position,
         ship=ship_profile,
+        is_live_position=vessel.is_live_position,
+        position_source=vessel.source if vessel.is_live_position else "static" if position else "none",
     )
 
 
@@ -415,18 +419,22 @@ def start_tracking(
 
     destination = (request.destination.latitude, request.destination.longitude)
 
-    # Prefer an explicit origin, then live AIS, then the demo-corridor default.
+    # Prefer an explicit origin, then live AIS position. Never fall back to fake coordinates.
     if request.origin is not None:
         origin = (request.origin.latitude, request.origin.longitude)
     elif vessel.position_lat is not None and vessel.position_lon is not None:
         origin = (vessel.position_lat, vessel.position_lon)
     else:
-        origin = DEFAULT_ORIGIN
+        raise InvalidCoordinatesError(
+            "No live AIS position available for this vessel. Please specify an origin coordinate or select a departure port."
+        )
 
     if abs(origin[0] - destination[0]) < 1e-6 and abs(origin[1] - destination[1]) < 1e-6:
         raise InvalidCoordinatesError("Destination must differ from the vessel's origin position.")
 
     tracking_manager.set_route_service(route_service)
+    if hasattr(vessel_provider, "ais_manager"):
+        tracking_manager.set_ais_provider(vessel_provider.ais_manager)
 
     try:
         tracking_manager.start(
@@ -490,6 +498,7 @@ def get_ship_status(
 
     session = tracking_manager.get(imo_number)
     if session is not None:
+        is_live = session.position_source == "ais"
         return ShipStatusResponse(
             imo_number=imo_number,
             status=session.status,
@@ -498,20 +507,27 @@ def get_ship_status(
                 latitude=round(session.destination[0], 4), longitude=round(session.destination[1], 4)
             ),
             timestamp=session.updated_at,
+            is_live_position=is_live,
+            position_source=session.position_source,
         )
 
-    # No active session. Report the AIS position if one is known; the contract
-    # requires a non-null position here, so fall back to the demo corridor
-    # origin rather than fabricating a plausible-looking coastal fix.
-    pos_lat = vessel.position_lat if vessel.position_lat is not None else DEFAULT_ORIGIN[0]
-    pos_lon = vessel.position_lon if vessel.position_lon is not None else DEFAULT_ORIGIN[1]
+
+    # No active session. Report the AIS position if one is known; return null
+    # position rather than a fallback coordinate — a null position is honest,
+    # a fabricated coordinate is not.
+    if vessel.position_lat is not None and vessel.position_lon is not None:
+        pos = Coordinate(latitude=vessel.position_lat, longitude=vessel.position_lon)
+    else:
+        pos = None
 
     return ShipStatusResponse(
         imo_number=imo_number,
         status=vessel.status,
-        position=Coordinate(latitude=pos_lat, longitude=pos_lon),
+        position=pos,
         destination=None,
         timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        is_live_position=vessel.is_live_position,
+        position_source=vessel.source if vessel.is_live_position else ("static" if pos else "none"),
     )
 
 
@@ -627,3 +643,84 @@ async def websocket_ship_endpoint(websocket: WebSocket, imo_number: str) -> None
         outbound.cancel()
         inbound.cancel()
         tracking_manager.unsubscribe(imo_number, queue)
+
+
+# ---------------------------------------------------------------------------
+# AIS Track History
+# ---------------------------------------------------------------------------
+
+
+@api_router.get(
+    "/ships/{imo_number}/track",
+    response_model=AISTrackResponse,
+    summary="AIS observation history for a tracked vessel",
+    description=(
+        "Returns the historical list of genuine AIS position observations collected "
+        "during an active or recently active tracking session. "
+        "Only real AIS fixes are included — never simulated dead-reckoning points. "
+        "If no tracking session exists or no AIS fixes have been received, "
+        "the track list will be empty."
+    ),
+)
+async def get_ais_track(
+    imo_number: str = Path(..., description="7-digit IMO number"),
+) -> AISTrackResponse:
+    try:
+        imo_number = validate_iso_8713_imo(imo_number)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    session = tracking_manager.get(imo_number)
+    if session is None:
+        return AISTrackResponse(imo_number=imo_number, track=[])
+
+    track_points = [
+        AISTrackPoint(latitude=lat, longitude=lon, timestamp=ts)
+        for lat, lon, ts in session.ais_track
+    ]
+    return AISTrackResponse(imo_number=imo_number, track=track_points)
+
+
+# ---------------------------------------------------------------------------
+# AIS Diagnostics
+# ---------------------------------------------------------------------------
+
+
+@api_router.get(
+    "/ais/stats",
+    response_model=AISStatsResponse,
+    summary="AISStream provider diagnostics",
+    description="Returns real-time statistics from the AISStream ingestion pipeline for debugging.",
+)
+async def get_ais_stats() -> AISStatsResponse:
+    """Exposes AISStreamProvider.stats() for operational visibility."""
+    try:
+        from naudisha.data.aisstream_provider import AISStreamProvider, ChainedAISProvider
+        vessel_prov = get_vessel_provider()
+        ais_stream = None
+        if hasattr(vessel_prov, "ais_manager"):
+            mgr = vessel_prov.ais_manager
+            ext = getattr(mgr, "external_provider", None)
+            if isinstance(ext, ChainedAISProvider):
+                for sub in ext.providers:
+                    if isinstance(sub, AISStreamProvider):
+                        ais_stream = sub
+                        break
+            elif isinstance(ext, AISStreamProvider):
+                ais_stream = ext
+        if ais_stream is not None:
+            stats = ais_stream.stats()
+            return AISStatsResponse(**stats)
+    except Exception:
+        pass
+
+    return AISStatsResponse(
+        enabled=False,
+        connected=False,
+        messages_seen=0,
+        vessels_with_position=0,
+        imo_mappings=0,
+        last_error="Provider not available",
+    )
+

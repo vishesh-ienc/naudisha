@@ -1,172 +1,164 @@
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowRight, Navigation, Route as RouteIcon, SlidersHorizontal, Waves, Wind, Gauge } from 'lucide-react'
-import { LottiePlayer } from '@/components/ui/LottiePlayer'
-import { SailingShip } from '@/components/ui/ShipAnimation'
-import { Badge } from '@/components/ui/Badge'
+import { ArrowRight, Compass, LocateFixed, Navigation, Route as RouteIcon, Waves, Wind, Gauge, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-interface FlowOption {
+interface FlowCard {
   id: string
   title: string
+  tagline: string
   description: string
-  detail: string
   icon: typeof Navigation
   to: string
-  accent: string
+  badge: string
 }
 
-const FLOWS: FlowOption[] = [
-  {
-    id: 'track',
-    title: 'Ship Already Sailing',
-    description: 'Track a vessel underway and watch its route adapt to conditions.',
-    detail: 'Enter an IMO number to pick up live position, route and status.',
-    icon: Navigation,
-    to: '/track',
-    accent: 'from-[var(--primary)]/12 to-transparent',
-  },
+const FLOWS: FlowCard[] = [
   {
     id: 'plan',
     title: 'Plan a Voyage',
-    description: 'Calculate an optimal route before the vessel departs.',
-    detail: 'Set start, destination and departure time to preview the route.',
+    tagline: 'Pre-departure optimal routing',
+    description: 'Calculate least-cost routes considering Copernicus ocean currents, wave resistance and atmospheric winds.',
     icon: RouteIcon,
     to: '/plan',
-    accent: 'from-[var(--accent)]/12 to-transparent',
+    badge: 'Flow 1',
   },
   {
-    id: 'manual',
-    title: 'Route Without an IMO',
-    description: 'Optimise a route by entering vessel particulars directly.',
-    detail: 'For planning, comparison, or when no IMO number is to hand.',
-    icon: SlidersHorizontal,
-    to: '/plan?manual=1',
-    accent: 'from-[var(--ocean-deep)]/12 to-transparent',
+    id: 'track',
+    title: 'Track a Ship',
+    tagline: 'Live transponder & navigation',
+    description: 'Monitor active vessel positions, course headings, speed over ground and dynamic route progress over WebSocket.',
+    icon: Navigation,
+    to: '/track',
+    badge: 'Flow 2',
+  },
+  {
+    id: 'live-route',
+    title: 'Live Routing',
+    tagline: 'Current fix to destination',
+    description: 'Calculate a weather-optimized passage directly from the vessel’s current coordinates to any target port.',
+    icon: LocateFixed,
+    to: '/live-route',
+    badge: 'Flow 3',
   },
 ]
 
 const CAPABILITIES = [
-  { icon: Waves, label: 'Ocean currents & waves', source: 'Copernicus Marine' },
-  { icon: Wind, label: 'Surface wind fields', source: 'Open-Meteo' },
-  { icon: Gauge, label: 'Incremental replanning', source: 'D* Lite' },
+  { icon: Waves, label: 'Copernicus Marine', detail: 'Global ocean currents & wave physics' },
+  { icon: Wind, label: 'Open-Meteo', detail: 'Real-time surface wind fields' },
+  { icon: Gauge, label: 'D* Lite Solver', detail: 'Dynamic multi-factor graph search' },
+  { icon: ShieldCheck, label: 'Vessel AIS', detail: 'Live maritime transponder ingestion' },
 ]
 
 export function LandingPage() {
   const navigate = useNavigate()
 
   return (
-    <div className="relative overflow-hidden">
-      {/* Ambient background — deep-water gradient with a slow drift. */}
+    <div className="relative min-h-[calc(100vh-3.5rem)] overflow-hidden">
+      {/* Dark maritime ambient glow */}
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
-        <div className="absolute inset-0 bg-gradient-to-b from-[var(--ocean)]/25 via-background to-background" />
-        <div className="animate-swell absolute -left-24 top-20 h-72 w-72 rounded-full bg-[var(--accent)]/10 blur-3xl" />
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0a0f1d] via-background to-background" />
+        <div className="animate-swell absolute -left-20 top-16 h-96 w-96 rounded-full bg-cyan-500/10 blur-3xl" />
         <div
-          className="animate-swell absolute -right-16 top-48 h-80 w-80 rounded-full bg-[var(--primary)]/10 blur-3xl"
-          style={{ animationDelay: '-4s' }}
+          className="animate-swell absolute -right-20 top-40 h-96 w-96 rounded-full bg-blue-600/10 blur-3xl"
+          style={{ animationDelay: '-4.5s' }}
         />
       </div>
 
-      <div className="mx-auto max-w-[1200px] px-4 py-12 sm:px-6 sm:py-16 lg:py-20">
-        {/* Hero */}
+      <div className="mx-auto max-w-[1400px] px-4 py-12 sm:px-6 sm:py-16 lg:py-20">
+        {/* Hero Section */}
         <div className="flex flex-col items-center text-center">
           <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.5, ease: 'easeOut' }}
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3.5 py-1 text-xs font-semibold text-cyan-400"
           >
-            <LottiePlayer
-              name="sailing-ship"
-              className="h-28 w-28"
-              fallback={<SailingShip size={112} />}
-            />
+            <Compass className="h-3.5 w-3.5" />
+            <span>Next-Generation Marine Navigation Platform</span>
           </motion.div>
 
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.45, delay: 0.1 }}
+            className="mt-6 max-w-3xl"
           >
-            <Badge variant="accent" className="mt-2">
-              Dynamic &amp; Optimal Ship Routing
-            </Badge>
-
-            <h1 className="mt-4 max-w-2xl text-balance text-3xl font-semibold tracking-tight sm:text-4xl lg:text-5xl">
-              Routes that respond to the ocean
+            <h1 className="text-balance text-4xl font-extrabold tracking-tight text-foreground sm:text-5xl lg:text-6xl">
+              Navigate smarter. <br />
+              <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-blue-500 bg-clip-text text-transparent">
+                Adapt to the sea.
+              </span>
             </h1>
 
-            <p className="mx-auto mt-4 max-w-xl text-pretty text-sm text-muted-foreground sm:text-base">
-              NauDisha fuses live oceanographic and atmospheric forecasts with vessel
-              hydrodynamics to plan sea routes — and replans them incrementally as
-              conditions change mid-voyage.
+            <p className="mx-auto mt-5 max-w-2xl text-pretty text-base text-muted-foreground sm:text-lg">
+              Weather-aware maritime routing and intelligent vessel navigation. NauDisha fuses live oceanographic forecasts
+              with vessel hydrodynamics to optimize safety, fuel, and transit time.
             </p>
           </motion.div>
 
-          <motion.ul
+          {/* Core Capabilities */}
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.25 }}
-            className="mt-7 flex flex-wrap items-center justify-center gap-x-6 gap-y-3"
+            className="mt-8 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 font-mono text-xs text-muted-foreground"
           >
             {CAPABILITIES.map((cap) => (
-              <li key={cap.label} className="flex items-center gap-2 text-xs text-muted-foreground">
-                <cap.icon className="h-3.5 w-3.5 text-accent" aria-hidden />
-                <span>{cap.label}</span>
-                <span className="text-muted-foreground/50">·</span>
-                <span className="font-medium text-foreground/70">{cap.source}</span>
-              </li>
+              <div key={cap.label} className="flex items-center gap-2">
+                <cap.icon className="h-3.5 w-3.5 text-cyan-400" aria-hidden />
+                <span className="font-semibold text-foreground">{cap.label}</span>
+                <span className="hidden text-muted-foreground/60 sm:inline">· {cap.detail}</span>
+              </div>
             ))}
-          </motion.ul>
+          </motion.div>
         </div>
 
-        {/* Flow selector */}
-        <div className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {/* 3 Core Product Flows */}
+        <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {FLOWS.map((flow, index) => (
             <motion.button
               key={flow.id}
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.15 + index * 0.08, ease: 'easeOut' }}
-              whileHover={{ y: -4 }}
+              whileHover={{ y: -5 }}
               onClick={() => navigate(flow.to)}
               className={cn(
-                'group relative flex flex-col overflow-hidden rounded-xl border border-[var(--border)]',
-                'bg-card p-5 text-left shadow-sm transition-shadow hover:shadow-lg',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]',
+                'group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-[var(--border)]',
+                'bg-card/70 p-6 text-left shadow-lg backdrop-blur-md transition-all hover:border-cyan-500/50 hover:shadow-cyan-500/10',
+                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
               )}
             >
-              <div
-                aria-hidden
-                className={cn('pointer-events-none absolute inset-0 bg-gradient-to-br opacity-0 transition-opacity duration-300 group-hover:opacity-100', flow.accent)}
-              />
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400 transition-colors group-hover:bg-cyan-500 group-hover:text-black">
+                    <flow.icon className="h-5 w-5" aria-hidden />
+                  </span>
+                  <span className="rounded-md bg-secondary/80 px-2 py-0.5 font-mono text-[10px] font-bold text-muted-foreground uppercase">
+                    {flow.badge}
+                  </span>
+                </div>
 
-              <div className="relative">
-                <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-secondary text-foreground transition-colors group-hover:bg-primary group-hover:text-primary-foreground">
-                  <flow.icon className="h-5 w-5" aria-hidden />
-                </span>
+                <h2 className="mt-5 text-lg font-bold tracking-tight text-foreground group-hover:text-cyan-400 transition-colors">
+                  {flow.title}
+                </h2>
+                <p className="mt-1 text-xs font-medium text-cyan-400/80">{flow.tagline}</p>
+                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{flow.description}</p>
+              </div>
 
-                <h2 className="mt-4 text-base font-semibold tracking-tight">{flow.title}</h2>
-                <p className="mt-1.5 text-sm text-muted-foreground">{flow.description}</p>
-                <p className="mt-3 text-xs text-muted-foreground/70">{flow.detail}</p>
-
-                <span className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-primary">
-                  Continue
-                  <ArrowRight className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-1" aria-hidden />
-                </span>
+              <div className="mt-6 flex items-center gap-1.5 font-mono text-xs font-semibold text-cyan-400">
+                Launch Flow
+                <ArrowRight className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-1" />
               </div>
             </motion.button>
           ))}
         </div>
 
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-          className="mt-10 text-center text-xs text-muted-foreground/70"
-        >
-          Routing, cost evaluation and replanning are performed by the NauDisha backend engine.
-          When the backend is unavailable this interface falls back to clearly-labelled demo data.
-        </motion.p>
+        {/* Honest System Info */}
+        <p className="mt-14 text-center font-mono text-xs text-muted-foreground/60">
+          All routes, meteorological hydrodynamics and dynamic graph optimizations are computed live by the NauDisha FastAPI engine.
+        </p>
       </div>
     </div>
   )

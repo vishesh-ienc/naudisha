@@ -30,7 +30,9 @@ interface LocationSearchProps {
 
 const KIND_LABEL: Record<NamedLocation['kind'], string> = {
   port: 'Port',
+  harbour: 'Harbour',
   anchorage: 'Anchorage',
+  strait: 'Strait / Canal',
   waypoint: 'Waypoint',
 }
 

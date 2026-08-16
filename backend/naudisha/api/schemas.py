@@ -243,6 +243,9 @@ class ShipResponse(BaseModel):
     status: str = "underway"  # "underway", "stopped", "unknown"
     position: Optional[Coordinate] = None
     ship: ShipProfileSchema
+    # Provenance fields — tells the frontend what kind of data this is
+    is_live_position: bool = False  # True only when position comes from a live AIS fix
+    position_source: str = "none"  # "aisstream", "digitraffic", "static", "none"
 
 
 class TrackingStartRequest(BaseModel):
@@ -294,9 +297,11 @@ class ShipStatusResponse(BaseModel):
     """Ship status query response schema."""
     imo_number: str
     status: str = "underway"  # "underway", "stopped", "unknown"
-    position: Coordinate
+    position: Optional[Coordinate] = None  # null when no AIS fix; never returns a fake coordinate
     destination: Optional[Coordinate] = None
     timestamp: str
+    is_live_position: bool = False
+    position_source: str = "none"  # "aisstream", "digitraffic", "simulated", "none"
 
 
 class ShipRouteResponse(BaseModel):
@@ -351,3 +356,44 @@ class ReadinessResponse(BaseModel):
     providers: Dict[str, bool] = Field(
         default_factory=dict, description="Per-provider availability flags"
     )
+
+
+class AISTrackPoint(BaseModel):
+    """One genuine AIS observation stored in the tracking session history."""
+    latitude: float
+    longitude: float
+    timestamp: str = Field(..., description="ISO 8601 UTC timestamp of this AIS fix")
+
+
+class AISTrackResponse(BaseModel):
+    """
+    Historical AIS observation track for a tracked vessel.
+    GET /api/ships/{imo}/track
+    Only real AIS positions are included — never simulation points.
+    """
+    imo_number: str
+    source: str = "ais"  # Always "ais" — never simulation
+    track: List[AISTrackPoint] = Field(
+        default_factory=list,
+        description="Time-ordered list of genuine AIS observations",
+    )
+
+
+class AISStatsResponse(BaseModel):
+    """
+    AISStream provider diagnostics.
+    GET /api/ais/stats
+    """
+    enabled: bool
+    connected: bool
+    messages_seen: int = 0
+    position_messages_seen: int = 0
+    static_messages_seen: int = 0
+    vessels_with_position: int = 0
+    imo_mappings: int = 0
+    last_message_timestamp: Optional[str] = None
+    last_position_timestamp: Optional[str] = None
+    last_error: Optional[str] = None
+    reconnect_count: int = 0
+    sample_imo_mappings: List[str] = Field(default_factory=list)
+

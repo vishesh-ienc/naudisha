@@ -26,7 +26,7 @@ import { telemetry, type DataSource } from '@/services/telemetry'
 import { generateMockRoute, mockStormAlerts, pathDistanceNm } from '@/services/mock/fixtures'
 import { haversineNm, pointAlongPath, bearingDeg } from '@/lib/geo'
 import { uid } from '@/lib/utils'
-import type { Coordinate, RouteAlert, RouteStatus, ShipResponse } from '@/types/api'
+import type { Coordinate, CurrentRouteResponse, RouteAlert, RouteLeg, RouteStatus, ShipResponse } from '@/types/api'
 
 export type ConnectionState = 'idle' | 'connecting' | 'live' | 'polling' | 'demo' | 'error'
 
@@ -40,7 +40,7 @@ export interface VoyageEvent {
 }
 
 export interface TrackingOptions {
-  destination: Coordinate
+  destination?: Coordinate | null
   origin?: Coordinate | null
   departureTime?: string
 }
@@ -50,9 +50,14 @@ export interface LiveTrackingState {
   shipSource: DataSource
   route: Coordinate[]
   previousRoute: Coordinate[]
+  legs: RouteLeg[]
+  currentRoute: CurrentRouteResponse | null
   destination: Coordinate | null
   position: Coordinate | null
+  positionSource: string
+  isLivePosition: boolean
   heading: number
+  speedKn: number
   alerts: RouteAlert[]
   events: VoyageEvent[]
   connection: ConnectionState
@@ -99,7 +104,11 @@ export function useLiveTracking(
   const [previousRoute, setPreviousRoute] = useState<Coordinate[]>([])
   const [destination, setDestination] = useState<Coordinate | null>(null)
   const [position, setPosition] = useState<Coordinate | null>(null)
+  const [positionSource, setPositionSource] = useState<string>('none')
+  const [isLivePosition, setIsLivePosition] = useState<boolean>(false)
   const [heading, setHeading] = useState(0)
+  const [speedKn, setSpeedKn] = useState(18.0)
+  const [legs, setLegs] = useState<RouteLeg[]>([])
   const [alerts, setAlerts] = useState<RouteAlert[]>([])
   const [events, setEvents] = useState<VoyageEvent[]>([])
   const [connection, setConnection] = useState<ConnectionState>('idle')
@@ -143,8 +152,10 @@ export function useLiveTracking(
     setShip(null)
     setRoute([])
     setPreviousRoute([])
+    setLegs([])
     setDestination(null)
     setPosition(null)
+    setSpeedKn(18.0)
     setAlerts([])
     setEvents([])
     setReplanCount(0)
@@ -163,7 +174,7 @@ export function useLiveTracking(
     (
       next: Coordinate[],
       stats: { distance_nm: number; estimated_time_hours: number; total_cost: number },
-      opts: { reason?: string; announce?: boolean } = {},
+      opts: { reason?: string; announce?: boolean; legs?: RouteLeg[] } = {},
     ) => {
       if (next.length === 0) return
 
@@ -177,6 +188,7 @@ export function useLiveTracking(
       if (previous.length > 1) setPreviousRoute(previous)
       routeRef.current = next
       setRoute(next)
+      if (opts.legs) setLegs(opts.legs)
       setDistanceRemainingNm(stats.distance_nm)
       setHoursRemaining(stats.estimated_time_hours)
       setTotalCost(stats.total_cost)
@@ -225,18 +237,22 @@ export function useLiveTracking(
         // caller-supplied origin is the reliable starting point.
         const origin = options.origin ?? shipResult.data.position ?? null
 
+        const dest = options?.destination ?? { latitude: 15.42, longitude: 73.75 }
+
         const trackResult = await startTracking(imo, {
-          destination: options.destination,
+          destination: dest,
           ...(origin && { origin }),
-          ...(options.departureTime && { departure_time: options.departureTime }),
+          ...(options?.departureTime && { departure_time: options.departureTime }),
         })
         if (cancelled) return
 
         const isLive = shipResult.source === 'live' && trackResult.source === 'live'
         simulatedRef.current = !isLive
         setSimulated(!isLive)
-        setDestination(options.destination)
+        setDestination(dest)
         if (origin) setPosition(origin)
+        setPositionSource(shipResult.data.position_source ?? (shipResult.data.is_live_position ? 'ais' : 'simulation'))
+        setIsLivePosition(shipResult.data.is_live_position ?? false)
 
         pushEvent({
           kind: 'started',
@@ -254,7 +270,7 @@ export function useLiveTracking(
           openSocket(imo)
         } else {
           // Backend unreachable: build a local route so the demo still works.
-          const localRoute = generateMockRoute(origin ?? options.destination, options.destination)
+          const localRoute = generateMockRoute(origin ?? dest, dest)
           routeRef.current = localRoute
           setRoute(localRoute)
           setPosition(localRoute[0] ?? null)
@@ -282,10 +298,16 @@ export function useLiveTracking(
 
           if (message.type === 'position_update') {
             setPosition(message.position)
+            if (message.position_source !== undefined) setPositionSource(message.position_source)
+            if (message.is_live_position !== undefined) setIsLivePosition(message.is_live_position)
+            if (message.speed_kn !== undefined && message.speed_kn !== null) setSpeedKn(message.speed_kn)
+            if (message.heading_deg !== undefined && message.heading_deg !== null) setHeading(message.heading_deg)
             return
           }
 
           setPosition(message.position)
+          if (message.position_source !== undefined) setPositionSource(message.position_source)
+          if (message.is_live_position !== undefined) setIsLivePosition(message.is_live_position)
           setRouteStatus('optimal')
           setRouteSource('live')
           setPlanning(false)
@@ -296,7 +318,7 @@ export function useLiveTracking(
               estimated_time_hours: message.estimated_time_hours,
               total_cost: message.total_cost,
             },
-            { reason: message.reason, announce: routeRef.current.length > 0 },
+            { reason: message.reason, announce: routeRef.current.length > 0, legs: message.legs },
           )
           if (message.alerts?.length) setAlerts(message.alerts)
         },
@@ -328,8 +350,8 @@ export function useLiveTracking(
   }, [
     imo,
     enabled,
-    options?.destination.latitude,
-    options?.destination.longitude,
+    options?.destination?.latitude,
+    options?.destination?.longitude,
     options?.origin?.latitude,
     options?.origin?.longitude,
     options?.departureTime,
@@ -348,6 +370,8 @@ export function useLiveTracking(
 
         if (statusResult.source === 'live') {
           setPosition(statusResult.data.position)
+          if (statusResult.data.position_source !== undefined) setPositionSource(statusResult.data.position_source)
+          if (statusResult.data.is_live_position !== undefined) setIsLivePosition(statusResult.data.is_live_position)
           if (statusResult.data.destination) setDestination(statusResult.data.destination)
           if (statusResult.data.status === 'stopped') setArrived(true)
         }
@@ -545,6 +569,21 @@ export function useLiveTracking(
     }
   }, [enabled, imo, simulated])
 
+  const currentRoute: CurrentRouteResponse | null = useMemo(() => {
+    if (!imo || route.length === 0) return null
+    return {
+      imo_number: imo,
+      route_status: routeStatus,
+      route,
+      distance_nm: distanceRemainingNm,
+      estimated_time_hours: hoursRemaining,
+      total_cost: totalCost,
+      updated_at: new Date().toISOString(),
+      destination: destination ?? { latitude: 0, longitude: 0 },
+      legs,
+    }
+  }, [imo, routeStatus, route, distanceRemainingNm, hoursRemaining, totalCost, destination, legs])
+
   const progressPercent = useMemo(() => {
     if (arrived) return 100
     if (initialDistanceNm <= 0) return 0
@@ -557,9 +596,14 @@ export function useLiveTracking(
     shipSource,
     route,
     previousRoute,
+    legs,
+    currentRoute,
     destination,
     position,
+    positionSource,
+    isLivePosition,
     heading,
+    speedKn,
     alerts,
     events,
     connection,

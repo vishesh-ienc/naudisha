@@ -288,4 +288,43 @@
   .animate-pulse-ring {
     animation: pulse-ring 2.2s cubic-bezier(0.24, 0.6, 0.35, 1) infinite;
   }
+
+  @keyframes windFlow {
+    0% {
+      transform: translateY(0px) scale(0.95);
+      opacity: 0.75;
+    }
+    50% {
+      transform: translateY(-2px) scale(1.05);
+      opacity: 1;
+    }
+    100% {
+      transform: translateY(0px) scale(0.95);
+      opacity: 0.75;
+    }
+  }
+
+  .animate-wind-flow {
+    animation: windFlow 2.2s ease-in-out infinite;
+  }
+
+  @keyframes currentDrift {
+    0% {
+      transform: scale(0.96);
+      opacity: 0.7;
+    }
+    50% {
+      transform: scale(1.04);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(0.96);
+      opacity: 0.7;
+    }
+  }
+
+  .animate-current-drift {
+    animation: currentDrift 3s ease-in-out infinite;
+  }
 }
+

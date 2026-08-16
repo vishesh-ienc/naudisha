@@ -21,18 +21,20 @@ interface LocationPickerProps {
   value: Coordinate | null
   onChange: (c: Coordinate | null) => void
   /** True while this field is the target of a map click. */
-  picking: boolean
-  onPickingChange: (picking: boolean) => void
-  accent: 'start' | 'destination'
+  picking?: boolean
+  onPickingChange?: (picking: boolean) => void
+  onPickOnMap?: () => void
+  accent?: 'start' | 'destination'
 }
 
 export function LocationPicker({
   label,
   value,
   onChange,
-  picking,
+  picking = false,
   onPickingChange,
-  accent,
+  onPickOnMap,
+  accent = 'start',
 }: LocationPickerProps) {
   const [showPresets, setShowPresets] = useState(false)
   const [manual, setManual] = useState({ lat: '', lon: '' })
@@ -61,7 +63,7 @@ export function LocationPicker({
     const candidate = { latitude: lat, longitude: lon }
     const check = validateSelectionPoint(candidate)
     if (!check.ok) {
-      setManualError(check.message)
+      setManualError(check.message ?? 'Invalid coordinate.')
       return
     }
 
@@ -79,7 +81,10 @@ export function LocationPicker({
         </span>
         <button
           type="button"
-          onClick={() => onPickingChange(!picking)}
+          onClick={() => {
+            if (onPickOnMap) onPickOnMap()
+            else onPickingChange?.(!picking)
+          }}
           className={cn(
             'flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
             picking ? 'bg-primary text-primary-foreground' : 'text-primary hover:bg-primary/10',

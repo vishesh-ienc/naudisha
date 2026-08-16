@@ -20,6 +20,7 @@ import {
   shipStatusResponseSchema,
   trackingStartResponseSchema,
   trackingStopResponseSchema,
+  aisTrackResponseSchema,
 } from './schemas'
 import type {
   CurrentRouteResponse,
@@ -32,6 +33,7 @@ import type {
   TrackingStartRequest,
   TrackingStartResponse,
   TrackingStopResponse,
+  AISTrackResponse,
 } from '@/types/api'
 
 /** Relative paths — the Vite dev proxy forwards these to the backend origin. */
@@ -45,8 +47,10 @@ export const ENDPOINTS = {
   trackingStop: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/tracking/stop`,
   shipStatus: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/status`,
   shipRoute: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/route`,
+  shipTrack: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/track`,
   liveSocket: (imo: string) => `/ws/ships/${encodeURIComponent(imo)}`,
 } as const
+
 
 /** ADDENDUM P2-1. Availability probe — short timeout, no retry. */
 export function getHealth(opts?: RequestOptions): Promise<HealthResponse> {
@@ -132,6 +136,14 @@ export function getCurrentRoute(
   opts?: RequestOptions,
 ): Promise<CurrentRouteResponse> {
   return request(ENDPOINTS.shipRoute(imoNumber), currentRouteResponseSchema, {
+    method: 'GET',
+    ...opts,
+  })
+}
+
+/** Historical genuine AIS observation track for a tracked vessel. */
+export function getAisTrack(imoNumber: string, opts?: RequestOptions): Promise<AISTrackResponse> {
+  return request(ENDPOINTS.shipTrack(imoNumber), aisTrackResponseSchema, {
     method: 'GET',
     ...opts,
   })

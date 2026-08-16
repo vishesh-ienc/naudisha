@@ -5,12 +5,8 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { LandingPage } from '@/pages/LandingPage'
 import { PlanVoyagePage } from '@/pages/PlanVoyagePage'
 import { TrackShipPage } from '@/pages/TrackShipPage'
+import { LiveRoutePage } from '@/pages/LiveRoutePage'
 
-/**
- * Retries are disabled here because `resilientApi` already owns retry and
- * fallback policy. Letting React Query retry as well would multiply requests and
- * make the Data Source Console log misleading about what actually happened.
- */
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -31,6 +27,7 @@ export default function App() {
               <Route index element={<LandingPage />} />
               <Route path="/plan" element={<PlanVoyagePage />} />
               <Route path="/track" element={<TrackShipPage />} />
+              <Route path="/live-route" element={<LiveRoutePage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

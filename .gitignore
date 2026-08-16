@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -41,14 +41,21 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Environments
+# Environments & secrets
 .env
+**/.env
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Node & Frontend
+node_modules/
+dist/
+.vite/
+
 
 # IDE & editors
 .vscode/

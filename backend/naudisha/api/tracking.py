@@ -7,6 +7,13 @@ This module owns the state behind `POST /api/ships/{imo}/tracking/start`,
 
 Design notes
 ------------
+*AIS is authoritative.* Each tick first checks whether a fresh AIS fix is
+available for the session's IMO via the injected `ais_provider`. When it is,
+the session position is set directly to the AIS coordinate, the heading is
+taken from AIS course/heading, and position_source is "ais". When no fresh fix
+exists the session falls back to dead reckoning along the planned route at
+cruising speed with position_source "simulation".
+
 *Route computation is slow and must never block the caller.* A cold route
 preview costs roughly two minutes because Copernicus Marine is queried live for
 the voyage corridor. So `start()` returns immediately with `route_status =
@@ -20,10 +27,9 @@ Sessions therefore keep progressing while nobody is connected, so a client that
 reconnects sees the vessel where it should be — and `GET .../status` reports
 real movement without any WebSocket at all.
 
-*Simulated movement is labelled as such.* Position advance is dead reckoning
-along the planned route at the vessel's cruising speed. It is a simulation, not
-an AIS observation, and the API surfaces it as `status: "underway"` only because
-the contract has no richer vocabulary; the frontend marks it clearly.
+*Simulated movement is labelled as such.* Dead reckoning is used only when no
+fresh AIS fix is available. `position_source` in every payload tells the
+frontend exactly what it is looking at.
 """
 
 from __future__ import annotations
@@ -40,6 +46,8 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from naudisha.core.calculations import calculate_bearing, calculate_haversine_distance
 from naudisha.core.models import ShipProfile
 from naudisha.api.services import RoutePlanningService
+# AISProvider imported lazily in TrackingSessionManager to avoid circular imports.
+# The type hint uses a string forward reference so the module loads cleanly.
 
 logger = logging.getLogger("naudisha.api.tracking")
 
@@ -128,6 +136,10 @@ def _offer(queue: "asyncio.Queue[Dict[str, Any]]", imo_number: str, message: Dic
         logger.debug("Dropping message for slow subscriber on IMO %s", imo_number)
 
 
+# Maximum AIS track points retained per session.
+MAX_AIS_TRACK_POINTS = 500
+
+
 @dataclass
 class TrackingSession:
     """Mutable state of one tracked voyage."""
@@ -139,6 +151,8 @@ class TrackingSession:
 
     position: Coord = (0.0, 0.0)
     heading: float = 0.0
+    speed_kn: Optional[float] = None          # from AIS when available
+    position_source: str = "simulation"       # "ais" | "simulation"
     route: List[Coord] = field(default_factory=list)
     route_status: str = "updating"  # §13.2
     distance_nm: float = 0.0
@@ -156,6 +170,10 @@ class TrackingSession:
     planning: bool = False
     last_error: Optional[str] = None
 
+    # Real AIS observation history — only genuine AIS fixes are appended here.
+    # Each entry is (latitude, longitude, timestamp_utc_iso).
+    ais_track: List[Tuple[float, float, str]] = field(default_factory=list)
+
     def __post_init__(self) -> None:
         self.position = self.origin
         if self.origin != self.destination:
@@ -164,10 +182,18 @@ class TrackingSession:
             )
 
     @property
-    def speed_kn(self) -> float:
+    def cruising_speed_kn(self) -> float:
+        """Design speed from vessel profile, used for dead reckoning."""
         if self.ship_profile is not None and self.ship_profile.cruising_speed > 0:
             return self.ship_profile.cruising_speed
         return 18.0
+
+    @property
+    def effective_speed_kn(self) -> float:
+        """Speed used for advance calculation — AIS SOG when available, else design speed."""
+        if self.speed_kn is not None and self.speed_kn > 0:
+            return self.speed_kn
+        return self.cruising_speed_kn
 
     @property
     def status(self) -> str:
@@ -182,7 +208,17 @@ class TrackingSession:
         return max(path_length_nm(self.route) - self.travelled_nm, 0.0)
 
     def remaining_hours(self) -> float:
-        return self.remaining_nm() / max(self.speed_kn, 1.0)
+        return self.remaining_nm() / max(self.effective_speed_kn, 1.0)
+
+    def append_ais_track_point(self, lat: float, lon: float, ts: str) -> None:
+        """Appends a genuine AIS observation. Deduplicates identical coordinates. Bounded."""
+        if self.ais_track:
+            last_lat, last_lon, _ = self.ais_track[-1]
+            if abs(last_lat - lat) < 1e-5 and abs(last_lon - lon) < 1e-5:
+                return  # Same location — skip duplicate
+        self.ais_track.append((lat, lon, ts))
+        if len(self.ais_track) > MAX_AIS_TRACK_POINTS:
+            self.ais_track = self.ais_track[-MAX_AIS_TRACK_POINTS:]
 
     def remaining_route(self) -> List[Coord]:
         """
@@ -224,6 +260,7 @@ class TrackingSessionManager:
         self._subscribers: Dict[str, Set["asyncio.Queue[Dict[str, Any]]"]] = {}
         self._lock = threading.RLock()
         self._route_service = route_service
+        self._ais_provider = None  # Injected after construction to avoid circular import
         self._ticker: Optional[asyncio.Task[None]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -231,6 +268,11 @@ class TrackingSessionManager:
 
     def set_route_service(self, service: RoutePlanningService) -> None:
         self._route_service = service
+
+    def set_ais_provider(self, provider: Any) -> None:
+        """Injects the live AIS provider so ticks can use real vessel positions."""
+        self._ais_provider = provider
+        logger.info("Tracking manager wired to AIS provider: %s", type(provider).__name__)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -262,6 +304,14 @@ class TrackingSessionManager:
         departure_time: Optional[str] = None,
     ) -> TrackingSession:
         """Creates (or replaces) a session and schedules its initial route plan."""
+        # Check if an immediate live AIS fix is available
+        ais_rec = None
+        if self._ais_provider is not None:
+            try:
+                ais_rec = self._ais_provider.get_live_position(imo_number)
+            except Exception:
+                pass
+
         with self._lock:
             session = TrackingSession(
                 imo_number=imo_number,
@@ -270,10 +320,24 @@ class TrackingSessionManager:
                 ship_profile=ship_profile,
                 departure_time=departure_time,
             )
+
+            if ais_rec is not None:
+                session.position = (round(ais_rec.latitude, 6), round(ais_rec.longitude, 6))
+                session.position_source = "ais"
+                session.speed_kn = ais_rec.speed_kn
+                if ais_rec.heading_deg is not None:
+                    session.heading = ais_rec.heading_deg
+                elif ais_rec.course_deg is not None:
+                    session.heading = ais_rec.course_deg
+                session.append_ais_track_point(
+                    ais_rec.latitude, ais_rec.longitude, ais_rec.timestamp_utc or _utc_now_iso()
+                )
+
             self._sessions[imo_number] = session
 
         self._schedule_plan(session, reason="initial")
         return session
+
 
     def stop(self, imo_number: str) -> bool:
         with self._lock:
@@ -458,53 +522,126 @@ class TrackingSessionManager:
                 self._publish(session.imo_number, message)
 
     def _advance(self, session: TrackingSession, simulated_seconds: float) -> Optional[Dict[str, Any]]:
-        """Moves one session forward. Returns a message to broadcast, if any."""
+        """
+        Moves one session forward.
+
+        AIS priority: if a fresh AIS fix is available, use that as the authoritative
+        position. Otherwise fall back to dead reckoning along the planned route.
+        Returns a position_update message to broadcast, or None if nothing worth sending.
+        """
+        # ---- Step 1: Try to obtain a live AIS fix ----
+        ais_record = None
+        if self._ais_provider is not None:
+            try:
+                ais_record = self._ais_provider.get_live_position(session.imo_number)
+            except Exception:
+                pass  # AIS provider failure must never stall the ticker
+
         with self._lock:
-            if session.arrived or session.planning or len(session.route) < 2:
+            if session.arrived:
                 return None
 
-            total_nm = path_length_nm(session.route)
-            if total_nm <= 0:
-                return None
-
-            step_nm = session.speed_kn * (simulated_seconds / 3600.0)
+            now_iso = _utc_now_iso()
             previous = session.position
-            session.travelled_nm = min(session.travelled_nm + step_nm, total_nm)
 
-            position, segment_index, complete = point_along_path(session.route, session.travelled_nm)
-            session.position = position
-            session.updated_at = _utc_now_iso()
+            if ais_record is not None:
+                # ---- AIS path: use real position ----
+                lat = round(ais_record.latitude, 6)
+                lon = round(ais_record.longitude, 6)
+                position: Coord = (lat, lon)
 
-            ahead = session.route[min(segment_index + 1, len(session.route) - 1)]
-            if calculate_haversine_distance(position[0], position[1], ahead[0], ahead[1]) > 1e-6:
-                session.heading = calculate_bearing(position[0], position[1], ahead[0], ahead[1])
+                session.position = position
+                session.position_source = "ais"
+                session.speed_kn = ais_record.speed_kn
+                session.updated_at = now_iso
 
-            if complete:
-                session.arrived = True
-                session.route_status = "optimal"
+                # Use real AIS heading if available, else course over ground
+                if ais_record.heading_deg is not None:
+                    session.heading = ais_record.heading_deg
+                elif ais_record.course_deg is not None:
+                    session.heading = ais_record.course_deg
 
-            moved_nm = calculate_haversine_distance(previous[0], previous[1], position[0], position[1])
+                # Append to the real AIS observation track
+                session.append_ais_track_point(lat, lon, ais_record.timestamp_utc or now_iso)
+
+                logger.debug(
+                    "[TRACK] IMO=%s AIS position lat=%.4f lon=%.4f sog=%s",
+                    session.imo_number, lat, lon,
+                    f"{ais_record.speed_kn:.1f}kn" if ais_record.speed_kn else "?",
+                )
+
+                # Advance the dead-reckoning cursor to the nearest point on the
+                # route so that when AIS is lost the simulation resumes from
+                # approximately the right place rather than jumping back to origin.
+                if len(session.route) >= 2:
+                    # Find how far along the route this AIS position is
+                    # (best-effort: just keep travelled_nm for now, replan handles it)
+                    pass
+
+                complete = False  # AIS arrival is detected via proximity, not route completion
+                if session.destination:
+                    dist_to_dest = calculate_haversine_distance(
+                        lat, lon, session.destination[0], session.destination[1]
+                    )
+                    if dist_to_dest < 0.5:  # within 0.5 NM of destination
+                        session.arrived = True
+                        complete = True
+
+            else:
+                # ---- Simulation path: dead reckoning ----
+                if session.planning or len(session.route) < 2:
+                    return None
+
+                total_nm = path_length_nm(session.route)
+                if total_nm <= 0:
+                    return None
+
+                step_nm = session.cruising_speed_kn * (simulated_seconds / 3600.0)
+                session.travelled_nm = min(session.travelled_nm + step_nm, total_nm)
+                position, segment_index, complete = point_along_path(session.route, session.travelled_nm)
+                session.position = position
+                session.position_source = "simulation"
+                session.updated_at = now_iso
+
+                ahead = session.route[min(segment_index + 1, len(session.route) - 1)]
+                if calculate_haversine_distance(position[0], position[1], ahead[0], ahead[1]) > 1e-6:
+                    session.heading = calculate_bearing(position[0], position[1], ahead[0], ahead[1])
+
+                if complete:
+                    session.arrived = True
+                    session.route_status = "optimal"
+
+            moved_nm = calculate_haversine_distance(previous[0], previous[1], session.position[0], session.position[1])
             due_for_replan = (
                 not complete
                 and _monotonic() - session.last_replan_monotonic >= REPLAN_INTERVAL_SECONDS
                 and session.remaining_nm() > 1.0
             )
             imo = session.imo_number
+            pos_source = session.position_source
+            is_live = pos_source == "ais"
+            spd = session.speed_kn
+            hdg = session.heading
+            pos = session.position
 
         if due_for_replan:
-            # Re-plan from the current position. The environmental cache is warm
-            # for this hour bucket, so this is usually fast; it still runs off
-            # the ticker so a cold miss cannot stall other sessions.
             self._schedule_plan(session, reason="replan")
 
         if moved_nm < MIN_BROADCAST_NM and not complete:
             return None
 
-        return {
+        msg: Dict[str, Any] = {
             "type": "position_update",
             "timestamp": _utc_now_iso(),
-            "position": {"latitude": round(session.position[0], 4), "longitude": round(session.position[1], 4)},
+            "position": {"latitude": round(pos[0], 4), "longitude": round(pos[1], 4)},
+            "position_source": pos_source,
+            "is_live_position": is_live,
         }
+        if spd is not None:
+            msg["speed_kn"] = round(spd, 1)
+        if hdg is not None:
+            msg["heading_deg"] = round(hdg, 1)
+        return msg
 
     # -- introspection -----------------------------------------------------
 

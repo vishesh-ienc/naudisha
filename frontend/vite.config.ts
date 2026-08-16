@@ -6,7 +6,7 @@ import type { ProxyOptions } from 'vite'
 
 // Backend base URL. The Vite dev proxy keeps the browser on a single origin,
 // so no CORS configuration is ever needed on the backend during development.
-const BACKEND = process.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
+const BACKEND = process.env.VITE_BACKEND_URL ?? 'http://127.0.0.1:8000'
 
 /**
  * A missing backend is the *expected* state while the frontend is developed
@@ -62,6 +62,7 @@ export default defineConfig({
     proxy: {
       '/api': quietProxy(),
       '/health': quietProxy(),
+      '/ready': quietProxy(),
       '/ws': quietProxy({ ws: true }),
     },
   },

@@ -6,7 +6,7 @@
  * hostile. Errors appear once the field reaches full length or loses focus.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ship } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
@@ -43,9 +43,15 @@ export function ImoInput({
   // Only complain once there is enough input for the complaint to be fair.
   const shouldValidate = touched || normalized.length >= 7
 
+  const prevValidRef = useRef<string | null>(undefined as any)
+  const currentValid = result.valid ? result.normalized : null
+
   useEffect(() => {
-    onValidChange?.(result.valid ? result.normalized : null)
-  }, [result, onValidChange])
+    if (prevValidRef.current !== currentValid) {
+      prevValidRef.current = currentValid
+      onValidChange?.(currentValid)
+    }
+  }, [currentValid, onValidChange])
 
   const error = shouldValidate && !result.valid && normalized.length > 0 ? result.message : null
   const success = result.valid ? 'Valid IMO number (ISO 8713 checksum passes)' : null

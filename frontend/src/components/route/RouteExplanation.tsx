@@ -10,7 +10,14 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Waves, Wind, Navigation2, Gauge, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import type { CurrentRouteResponse, RouteLeg, RoutePreviewResponse } from '@/types/api'
-import { describeLeg, legInfluence, summariseFactors, summariseRoute, type Influence } from '@/lib/explain'
+import {
+  describeLeg,
+  legInfluence,
+  summariseFactors,
+  summariseRoute,
+  type Influence,
+  type RouteFactor,
+} from '@/lib/explain'
 import { compassPoint, formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -61,9 +68,9 @@ export function RouteExplanation({ route, className }: RouteExplanationProps) {
 
       {factors.length > 0 && (
         <div className="divide-y divide-[var(--border)]">
-          {factors.map((factor, i) => {
-            const style = INFLUENCE_STYLE[factor.influence]
-            const Icon = FACTOR_ICON[factor.key]
+          {factors.map((factor: RouteFactor, i: number) => {
+            const style = INFLUENCE_STYLE[factor.influence] ?? INFLUENCE_STYLE.neutral
+            const Icon = FACTOR_ICON[factor.key] ?? Gauge
             const Trend = style.icon
 
             return (
