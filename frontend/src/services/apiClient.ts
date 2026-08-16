@@ -14,6 +14,7 @@ import { request, type RequestOptions } from './http'
 import {
   currentRouteResponseSchema,
   healthResponseSchema,
+  planJobResponseSchema,
   routePreviewResponseSchema,
   shipResponseSchema,
   shipStatusResponseSchema,
@@ -23,6 +24,7 @@ import {
 import type {
   CurrentRouteResponse,
   HealthResponse,
+  PlanJobResponse,
   RoutePreviewRequest,
   RoutePreviewResponse,
   ShipResponse,
@@ -37,6 +39,8 @@ export const ENDPOINTS = {
   health: '/health',
   ships: '/api/ships',
   routePreview: '/api/routes/preview',
+  routePlan: '/api/routes/plan',
+  routePlanJob: (jobId: string) => `/api/routes/plan/${encodeURIComponent(jobId)}`,
   trackingStart: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/tracking/start`,
   trackingStop: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/tracking/stop`,
   shipStatus: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/status`,
@@ -137,4 +141,41 @@ export function getCurrentRoute(
 export function liveSocketUrl(imoNumber: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}${ENDPOINTS.liveSocket(imoNumber)}`
+}
+
+// ---------------------------------------------------------------------------
+// Asynchronous planning
+//
+// A cold plan costs 70-85s of live Copernicus queries. Submitting a job and
+// polling lets the UI show genuine progress instead of holding an HTTP request
+// open past every reasonable timeout.
+// ---------------------------------------------------------------------------
+
+export function submitRoutePlan(
+  payload: RoutePreviewRequest,
+  opts?: RequestOptions,
+): Promise<PlanJobResponse> {
+  const body: Record<string, unknown> = {
+    start: payload.start,
+    destination: payload.destination,
+  }
+  if (payload.imo_number) body.imo_number = payload.imo_number
+  if (payload.departure_time) body.departure_time = payload.departure_time
+  if (payload.ship) body.ship = payload.ship
+
+  return request(ENDPOINTS.routePlan, planJobResponseSchema, {
+    method: 'POST',
+    body,
+    timeoutMs: 15000,
+    ...opts,
+  })
+}
+
+export function pollRoutePlan(jobId: string, opts?: RequestOptions): Promise<PlanJobResponse> {
+  return request(ENDPOINTS.routePlanJob(jobId), planJobResponseSchema, {
+    method: 'GET',
+    timeoutMs: 10000,
+    retries: 0,
+    ...opts,
+  })
 }

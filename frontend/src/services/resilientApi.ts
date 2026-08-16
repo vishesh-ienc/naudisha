@@ -166,8 +166,19 @@ async function resolve<T>(
     const httpError = err instanceof HttpError ? err : new HttpError('network', String(err))
     const durationMs = Math.round(performance.now() - started)
 
+    // A 404 means two very different things, and conflating them is what let a
+    // dead tracking session masquerade as a working one:
+    //
+    //   * No contract envelope -> the endpoint does not exist on this backend
+    //     yet. That is a build-order gap, so mock data is the right answer.
+    //   * With an envelope (ROUTE_NOT_FOUND, SHIP_NOT_FOUND) -> a working
+    //     backend deliberately answering "no such thing". That is a real answer
+    //     about real state, and substituting a fabricated route for it hides
+    //     the very condition the caller needs to react to.
+    const isSemanticNotFound = httpError.kind === 'not_found' && httpError.apiError !== undefined
+
     // Genuine client error — surface it, never fabricate a success.
-    if (httpError.kind === 'client') {
+    if (httpError.kind === 'client' || isSemanticNotFound) {
       telemetry.record({
         method,
         endpoint,

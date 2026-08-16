@@ -19,6 +19,7 @@ import {
   identifyShip,
   startTracking,
   stopTracking,
+  UserFacingApiError,
 } from '@/services/resilientApi'
 import { LiveSocket, type SocketState } from '@/services/liveSocket'
 import { telemetry, type DataSource } from '@/services/telemetry'
@@ -78,6 +79,15 @@ const PLANNING_POLL_MS = 4000
 /** Fallback polling cadence when the WebSocket is unavailable. */
 const FALLBACK_POLL_MS = 5000
 
+/**
+ * Tracking sessions live in backend memory, so restarting the API drops them
+ * while this hook keeps polling a session that no longer exists. These bound the
+ * automatic recovery: enough attempts to ride out a dev-server restart, spaced
+ * far enough apart that a genuinely absent ship cannot become a request loop.
+ */
+const MAX_REACQUIRE_ATTEMPTS = 3
+const REACQUIRE_COOLDOWN_MS = 10_000
+
 export function useLiveTracking(
   imo: string | null,
   enabled: boolean,
@@ -106,6 +116,10 @@ export function useLiveTracking(
 
   const socketRef = useRef<LiveSocket | null>(null)
   const travelledRef = useRef(0)
+  // Bumping this re-runs acquisition, which re-creates a lost backend session.
+  const [reacquireNonce, setReacquireNonce] = useState(0)
+  const reacquireAttemptsRef = useRef(0)
+  const lastReacquireRef = useRef(0)
   const stormFiredRef = useRef(false)
   const stormClearedRef = useRef(false)
   const routeRef = useRef<Coordinate[]>([])
@@ -123,6 +137,8 @@ export function useLiveTracking(
     stormClearedRef.current = false
     routeRef.current = []
     simulatedRef.current = true
+    reacquireAttemptsRef.current = 0
+    lastReacquireRef.current = 0
 
     setShip(null)
     setRoute([])
@@ -231,6 +247,9 @@ export function useLiveTracking(
         })
 
         if (isLive) {
+          // A session exists again, so the recovery budget is spent and reset —
+          // a restart an hour from now gets its own full set of attempts.
+          reacquireAttemptsRef.current = 0
           setConnection('polling')
           openSocket(imo)
         } else {
@@ -314,6 +333,8 @@ export function useLiveTracking(
     options?.origin?.latitude,
     options?.origin?.longitude,
     options?.departureTime,
+    // Re-runs acquisition after the backend loses its tracking session.
+    reacquireNonce,
   ])
 
   /** One-shot REST sync of position and route (§7 + §8). */
@@ -347,11 +368,42 @@ export function useLiveTracking(
             )
           }
         }
-      } catch {
-        // Individual sync failures are already recorded by the resilient layer.
+      } catch (err) {
+        // A ROUTE_NOT_FOUND here means the backend is healthy but has no session
+        // for this ship — almost always because the API restarted and dropped
+        // its in-memory sessions. Polling on would 404 forever, so re-run
+        // acquisition to re-establish the voyage.
+        if (err instanceof UserFacingApiError && err.code === 'ROUTE_NOT_FOUND') {
+          const now = Date.now()
+          const canRetry =
+            reacquireAttemptsRef.current < MAX_REACQUIRE_ATTEMPTS &&
+            now - lastReacquireRef.current > REACQUIRE_COOLDOWN_MS
+
+          if (canRetry) {
+            reacquireAttemptsRef.current += 1
+            lastReacquireRef.current = now
+            telemetry.log(
+              'warn',
+              `Tracking session missing for IMO ${imoNumber} — re-establishing ` +
+                `(attempt ${reacquireAttemptsRef.current}/${MAX_REACQUIRE_ATTEMPTS})`,
+              'useLiveTracking',
+            )
+            pushEvent({
+              kind: 'error',
+              message: 'Tracking session was lost on the backend — reconnecting',
+              reason: 'session_expired',
+              simulated: false,
+            })
+            setReacquireNonce((n) => n + 1)
+          } else if (reacquireAttemptsRef.current >= MAX_REACQUIRE_ATTEMPTS) {
+            setConnection('error')
+          }
+          return
+        }
+        // Everything else is already recorded by the resilient layer.
       }
     },
-    [applyRoute],
+    [applyRoute, pushEvent],
   )
 
   // ---------------------------------------------------------------------
