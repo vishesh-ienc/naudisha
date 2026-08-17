@@ -299,3 +299,40 @@ export interface ReadinessResponse {
   service: string
   providers?: Record<string, boolean>
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic D* Lite Replanning Simulation
+// ---------------------------------------------------------------------------
+
+export interface HazardInjection {
+  id: string
+  name: string
+  type: 'storm' | 'current' | 'restricted'
+  center: Coordinate
+  radius_nm: number
+  severity: number
+  description?: string
+}
+
+export interface DynamicReplanRequest {
+  current_position: Coordinate
+  destination: Coordinate
+  active_route: Coordinate[]
+  hazard: HazardInjection
+  optimization_objective?: string
+  departure_time?: IsoTimestamp
+  imo_number?: ImoNumber
+}
+
+export interface DynamicReplanResponse {
+  new_route: Coordinate[]
+  previous_route: Coordinate[]
+  replan_time_ms: number
+  affected_edges_count: number
+  hazard_avoidance_score: number
+  distance_nm: number
+  estimated_time_hours: number
+  total_cost: number
+  legs: RouteLeg[]
+}
+

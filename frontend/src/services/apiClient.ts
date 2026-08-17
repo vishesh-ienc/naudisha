@@ -21,9 +21,12 @@ import {
   trackingStartResponseSchema,
   trackingStopResponseSchema,
   aisTrackResponseSchema,
+  dynamicReplanResponseSchema,
 } from './schemas'
 import type {
   CurrentRouteResponse,
+  DynamicReplanRequest,
+  DynamicReplanResponse,
   HealthResponse,
   PlanJobResponse,
   RoutePreviewRequest,
@@ -43,6 +46,7 @@ export const ENDPOINTS = {
   routePreview: '/api/routes/preview',
   routePlan: '/api/routes/plan',
   routePlanJob: (jobId: string) => `/api/routes/plan/${encodeURIComponent(jobId)}`,
+  routeSimulateReplan: '/api/routes/simulate-replan',
   trackingStart: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/tracking/start`,
   trackingStop: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/tracking/stop`,
   shipStatus: (imo: string) => `/api/ships/${encodeURIComponent(imo)}/status`,
@@ -193,3 +197,17 @@ export function pollRoutePlan(jobId: string, opts?: RequestOptions): Promise<Pla
     ...opts,
   })
 }
+
+/** Triggers fast real-time D* Lite dynamic replanning around simulated hazards. */
+export function simulateDynamicReplan(
+  payload: DynamicReplanRequest,
+  opts?: RequestOptions,
+): Promise<DynamicReplanResponse> {
+  return request(ENDPOINTS.routeSimulateReplan, dynamicReplanResponseSchema, {
+    method: 'POST',
+    body: payload as unknown as Record<string, unknown>,
+    timeoutMs: 10000,
+    ...opts,
+  })
+}
+

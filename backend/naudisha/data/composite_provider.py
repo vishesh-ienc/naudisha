@@ -136,9 +136,23 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="env_batch") as pool:
             fut_marine = pool.submit(self.marine_provider.fetch_conditions_batch, request_list)
             fut_wind = pool.submit(self.wind_provider.fetch_wind_batch, request_list)
-            marine_results = fut_marine.result()
             try:
-                wind_results = fut_wind.result()
+                marine_results = fut_marine.result(timeout=6.0)
+            except Exception as exc:
+                logger.warning("Copernicus Marine batch query timed out or failed (%s), defaulting to hydrodynamic baseline.", exc)
+                marine_results = {
+                    req: EnvironmentalData(
+                        timestamp=req.timestamp if isinstance(req.timestamp, str) else req.timestamp.isoformat(),
+                        wave_height=1.5,
+                        wave_direction=220.0,
+                        wave_period=7.0,
+                        current_speed=0.8,
+                        current_direction=90.0,
+                    )
+                    for req in request_list
+                }
+            try:
+                wind_results = fut_wind.result(timeout=4.0)
             except Exception as exc:
                 logger.warning("Open-Meteo batch wind fetch failed (%s), defaulting to seasonal monsoon wind model.", exc)
                 wind_results = {
@@ -150,7 +164,7 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
         results: Dict[ConditionRequest, EnvironmentalData] = {}
         for req in request_list:
             marine_data = marine_results[req]
-            wind_speed, wind_direction = wind_results.get(req, (10.0, 90.0))
+            wind_speed, wind_direction = wind_results.get(req, _get_climatological_wind(req.lat, req.lon, _normalize_utc_datetime(req.timestamp)))
             results[req] = EnvironmentalData(
                 timestamp=marine_data.timestamp,
                 wind_speed=wind_speed,

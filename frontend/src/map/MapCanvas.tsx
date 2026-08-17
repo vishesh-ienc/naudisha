@@ -11,6 +11,7 @@ import {
   MapContainer,
   TileLayer,
   Polyline,
+  Circle,
   Marker,
   Popup,
   useMap,
@@ -20,18 +21,32 @@ import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Coordinate, RouteAlert, RouteLeg } from '@/types/api'
 import { NAVIGABLE_REGION, boundsOf, smoothPath } from '@/lib/geo'
+import { NAMED_LOCATIONS, type NamedLocation } from '@/lib/ports'
 import { formatCoordinate } from '@/lib/format'
 import {
   alertIcon,
+  counterCurrentIcon,
   currentVectorIcon,
   destinationIcon,
+  portDotIcon,
   shipIcon,
   startIcon,
+  stormVortexIcon,
   waypointIcon,
   windVectorIcon,
 } from './markers'
 import { MapLegend } from './MapLegend'
 import { cn } from '@/lib/utils'
+
+export interface SimulationHazard {
+  id: string
+  name: string
+  type: 'storm' | 'current' | 'restricted'
+  center: Coordinate
+  radiusNm: number
+  severity: number
+  description?: string
+}
 
 export interface MapCanvasProps {
   start?: Coordinate | null
@@ -60,6 +75,9 @@ export interface MapCanvasProps {
   alerts?: RouteAlert[]
   showVectors?: boolean
   showLegend?: boolean
+  showPorts?: boolean
+  simulationHazard?: SimulationHazard | null
+  onSelectPort?: (port: NamedLocation, asType: 'origin' | 'destination') => void
   className?: string
   interactive?: boolean
 }
@@ -79,6 +97,9 @@ export function MapCanvas({
   alerts = [],
   showVectors = true,
   showLegend = true,
+  showPorts = true,
+  simulationHazard = null,
+  onSelectPort,
   className,
   interactive = true,
 }: MapCanvasProps) {
@@ -202,8 +223,8 @@ export function MapCanvas({
     <div className={cn('relative h-full w-full overflow-hidden rounded-2xl border border-[var(--border)] shadow-2xl', className)}>
       <MapContainer
         center={center}
-        zoom={9}
-        minZoom={4}
+        zoom={NAVIGABLE_REGION.defaultZoom}
+        minZoom={3}
         maxZoom={17}
         className="h-full w-full bg-[#0b1329]"
         zoomControl={interactive}
@@ -243,6 +264,90 @@ export function MapCanvas({
 
         {/* Auto-fit map viewport to active passage or single vessel position */}
         <MapBoundsController bounds={fitBounds} singlePoint={shipPosition ?? start} />
+
+        {/* INDIAN OCEAN SEAPORTS & MARITIME HUBS LAYER */}
+        {showPorts && NAMED_LOCATIONS.map((loc) => {
+          const isSelectedOrigin = start && Math.abs(start.latitude - loc.coordinate.latitude) < 0.05 && Math.abs(start.longitude - loc.coordinate.longitude) < 0.05
+          const isSelectedDest = destination && Math.abs(destination.latitude - loc.coordinate.latitude) < 0.05 && Math.abs(destination.longitude - loc.coordinate.longitude) < 0.05
+          if (isSelectedOrigin || isSelectedDest) return null // Handled by origin/dest markers
+
+          return (
+            <Marker
+              key={loc.id}
+              position={[loc.coordinate.latitude, loc.coordinate.longitude]}
+              icon={portDotIcon(loc.kind === 'port')}
+            >
+              <Popup className="naudisha-popup">
+                <div className="p-2 font-sans text-xs min-w-[210px]">
+                  <div className="font-bold text-sky-400 text-[12px]">{loc.name}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    {loc.country} {loc.unLocode ? `(${loc.unLocode})` : ''} · <span className="text-slate-300">{loc.region}</span>
+                  </div>
+                  <div className="font-mono text-[10px] text-slate-400 mt-1">
+                    {formatCoordinate(loc.coordinate, 4)}
+                  </div>
+                  {onSelectPort && (
+                    <div className="mt-2.5 pt-2 border-t border-slate-700/60 flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onSelectPort(loc, 'origin')}
+                        className="flex-1 px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded text-[10px] font-semibold transition-colors text-center"
+                      >
+                        Set Origin
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSelectPort(loc, 'destination')}
+                        className="flex-1 px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded text-[10px] font-semibold transition-colors text-center"
+                      >
+                        Set Dest
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </Marker>
+          )
+        })}
+
+        {/* DYNAMIC D* LITE SIMULATION HAZARD ZONE (CYCLONE / CURRENT GYRE) */}
+        {simulationHazard && (
+          <>
+            <Circle
+              center={[simulationHazard.center.latitude, simulationHazard.center.longitude]}
+              radius={simulationHazard.radiusNm * 1852}
+              pathOptions={{
+                color: simulationHazard.type === 'storm' ? '#f43f5e' : '#f59e0b',
+                fillColor: simulationHazard.type === 'storm' ? '#ef4444' : '#fbbf24',
+                fillOpacity: 0.22,
+                weight: 2.5,
+                dashArray: '6, 6',
+              }}
+            />
+            <Marker
+              position={[simulationHazard.center.latitude, simulationHazard.center.longitude]}
+              icon={
+                simulationHazard.type === 'storm'
+                  ? stormVortexIcon(simulationHazard.severity)
+                  : counterCurrentIcon()
+              }
+            >
+              <Popup className="naudisha-popup">
+                <div className="p-1.5 font-sans text-xs">
+                  <div className="font-bold text-rose-400 uppercase tracking-wider text-[10px]">
+                    {simulationHazard.name}
+                  </div>
+                  <div className="mt-1 text-[11px] text-slate-200">
+                    {simulationHazard.description || 'Severe weather zone triggering D* Lite dynamic edge re-evaluation.'}
+                  </div>
+                  <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+                    Radius: {simulationHazard.radiusNm} NM · Severity: {simulationHazard.severity.toFixed(1)}x
+                  </div>
+                </div>
+              </Popup>
+            </Marker>
+          </>
+        )}
 
 
         {/* Previous Route Trail (Faded Cyan/Gray) */}

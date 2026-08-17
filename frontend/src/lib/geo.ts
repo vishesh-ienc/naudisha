@@ -8,14 +8,14 @@ export interface GeoBounds {
 }
 
 export const NAVIGABLE_REGION = {
-  name: 'Arabian Sea — Mumbai Approaches',
-  center: { latitude: 18.75, longitude: 72.2 },
-  defaultZoom: 9,
+  name: 'Indian Ocean Maritime Region',
+  center: { latitude: 12.0, longitude: 72.0 },
+  defaultZoom: 4,
   bounds: {
-    south: 17.5,
-    north: 20.5,
-    west: 70.0,
-    east: 73.5,
+    south: -35.0,
+    north: 32.0,
+    west: 30.0,
+    east: 110.0,
   },
 }
 

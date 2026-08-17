@@ -144,3 +144,57 @@ export function alertIcon(severity: 'critical' | 'warning' | 'info') {
     [15, 15],
   )
 }
+
+/** Glowing Indian Ocean Seaport Anchor Marker */
+export function portDotIcon(isMajor = true) {
+  const size = isMajor ? 22 : 16
+  const anchorColor = isMajor ? '#38bdf8' : '#94a3b8'
+  const glowColor = isMajor ? 'rgba(56,189,248,0.45)' : 'rgba(148,163,184,0.25)'
+
+  return svgIcon(
+    `<div class="group cursor-pointer transition-transform hover:scale-125" style="display:flex; align-items:center; justify-content:center; width:${size}px; height:${size}px;" title="Seaport">
+       <svg viewBox="0 0 24 24" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
+         <circle cx="12" cy="12" r="10" fill="#0f172a" stroke="${anchorColor}" stroke-width="2" style="filter: drop-shadow(0 0 4px ${glowColor});"/>
+         <circle cx="12" cy="12" r="4.5" fill="${anchorColor}"/>
+         <circle cx="12" cy="12" r="2" fill="#ffffff"/>
+       </svg>
+     </div>`,
+    [size, size],
+    [size / 2, size / 2],
+    'naudisha-port-dot',
+  )
+}
+
+/** Pulsing Severe Tropical Storm / Cyclone Radar Vortex Marker */
+export function stormVortexIcon(_severity = 1.0) {
+  return svgIcon(
+    `<div class="animate-spin" style="animation-duration: 4s; display:flex; align-items:center; justify-content:center; width:52px; height:52px;" title="Severe Storm Vortex">
+       <svg viewBox="0 0 52 52" width="52" height="52" xmlns="http://www.w3.org/2000/svg">
+         <circle cx="26" cy="26" r="24" fill="rgba(244,63,94,0.15)" stroke="#f43f5e" stroke-width="1.5" stroke-dasharray="4,4"/>
+         <circle cx="26" cy="26" r="16" fill="rgba(244,63,94,0.3)" stroke="#fb7185" stroke-width="2"/>
+         <!-- Cyclone spiral arms -->
+         <path d="M26 12 C34 14, 38 22, 36 28 C34 34, 26 36, 22 34 C16 31, 14 24, 18 18 C20 15, 23 13, 26 12" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+         <circle cx="26" cy="26" r="4" fill="#ffffff"/>
+       </svg>
+     </div>`,
+    [52, 52],
+    [26, 26],
+    'naudisha-storm-vortex',
+  )
+}
+
+/** Adverse Ocean Gyre / Counter-Current Marker */
+export function counterCurrentIcon() {
+  return svgIcon(
+    `<div class="animate-spin" style="animation-duration: 6s; display:flex; align-items:center; justify-content:center; width:44px; height:44px;" title="Counter Current Gyre">
+       <svg viewBox="0 0 44 44" width="44" height="44" xmlns="http://www.w3.org/2000/svg">
+         <circle cx="22" cy="22" r="20" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3,3"/>
+         <path d="M22 8 A14 14 0 0 1 36 22 M36 22 L32 18 M36 22 L40 18" fill="none" stroke="#fbbf24" stroke-width="2.2" stroke-linecap="round"/>
+         <path d="M22 36 A14 14 0 0 1 8 22 M8 22 L12 26 M8 22 L4 26" fill="none" stroke="#fbbf24" stroke-width="2.2" stroke-linecap="round"/>
+       </svg>
+     </div>`,
+    [44, 44],
+    [22, 22],
+    'naudisha-counter-current',
+  )
+}

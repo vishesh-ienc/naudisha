@@ -433,3 +433,39 @@ class AISStatsResponse(BaseModel):
     reconnect_count: int = 0
     sample_imo_mappings: List[str] = Field(default_factory=list)
 
+
+class HazardInjectionSchema(BaseModel):
+    """Schema for a dynamic simulation hazard (severe cyclone, opposing gyre, obstacle)."""
+    id: str = Field("storm-01", description="Unique hazard identifier")
+    name: str = Field("Tropical Cyclone Vortex", description="Human-readable hazard name")
+    type: str = Field("storm", description="Hazard type: 'storm', 'current', or 'restricted'")
+    center: Coordinate = Field(..., description="Geographic center of the hazard")
+    radius_nm: float = Field(45.0, ge=5.0, le=300.0, description="Hazard influence radius in nautical miles")
+    severity: float = Field(1.0, ge=0.1, le=5.0, description="Severity multiplier (1.0 = standard gale/cyclone)")
+    description: Optional[str] = None
+
+
+class DynamicReplanRequest(BaseModel):
+    """Request schema for on-the-fly D* Lite dynamic route replanning."""
+    current_position: Coordinate = Field(..., description="Vessel's current underway position")
+    destination: Coordinate = Field(..., description="Voyage destination port coordinates")
+    active_route: List[Coordinate] = Field(default_factory=list, description="Original optimal route waypoints")
+    hazard: HazardInjectionSchema = Field(..., description="Dynamic hazard introduced ahead of the vessel")
+    optimization_objective: str = Field("balanced", description="Voyage optimization objective")
+    departure_time: Optional[str] = None
+    imo_number: Optional[str] = None
+
+
+class DynamicReplanResponse(BaseModel):
+    """Response schema returned after D* Lite incremental vertex updates and path repair."""
+    new_route: List[Coordinate]
+    previous_route: List[Coordinate]
+    replan_time_ms: float
+    affected_edges_count: int
+    hazard_avoidance_score: float
+    distance_nm: float
+    estimated_time_hours: float
+    total_cost: float
+    legs: List[RouteLegSchema] = Field(default_factory=list)
+
+

@@ -42,6 +42,9 @@ from naudisha.api.schemas import (
     AISTrackPoint,
     AISTrackResponse,
     AISStatsResponse,
+    DynamicReplanRequest,
+    DynamicReplanResponse,
+    HazardInjectionSchema,
     validate_iso_8713_imo,
 )
 from naudisha.api.planning import planning_manager
@@ -218,6 +221,70 @@ def _to_preview_response(result) -> RoutePreviewResponse:
                 safety_score=leg.safety_score,
             )
             for leg in result.legs
+        ],
+    )
+
+
+@api_router.post(
+    "/routes/simulate-replan",
+    response_model=DynamicReplanResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Simulate Real-Time D* Lite Dynamic Replanning",
+    description="Injects a dynamic weather or navigation hazard and executes fast D* Lite incremental path repair.",
+)
+def simulate_replan(
+    request: DynamicReplanRequest,
+    service: RoutePlanningService = Depends(get_route_service),
+) -> DynamicReplanResponse:
+    res = service.simulate_dynamic_replan(
+        current_lat=request.current_position.latitude,
+        current_lon=request.current_position.longitude,
+        dest_lat=request.destination.latitude,
+        dest_lon=request.destination.longitude,
+        hazard_lat=request.hazard.center.latitude,
+        hazard_lon=request.hazard.center.longitude,
+        hazard_radius_nm=request.hazard.radius_nm,
+        hazard_type=request.hazard.type,
+        hazard_severity=request.hazard.severity,
+        optimization_objective=request.optimization_objective,
+        timestamp=request.departure_time,
+    )
+
+    return DynamicReplanResponse(
+        new_route=[Coordinate(latitude=lat, longitude=lon) for lat, lon in res["new_route"]],
+        previous_route=request.active_route,
+        replan_time_ms=res["replan_time_ms"],
+        affected_edges_count=res["affected_edges_count"],
+        hazard_avoidance_score=res["hazard_avoidance_score"],
+        distance_nm=res["distance_nm"],
+        estimated_time_hours=res["estimated_time_hours"],
+        total_cost=res["total_cost"],
+        legs=[
+            RouteLegSchema(
+                **{"from": Coordinate(latitude=leg.from_lat, longitude=leg.from_lon)},
+                to=Coordinate(latitude=leg.to_lat, longitude=leg.to_lon),
+                distance_nm=leg.distance_nm,
+                travel_time_hours=leg.travel_time_hours,
+                bearing=leg.bearing,
+                cost=leg.cost,
+                wind_speed_kn=leg.wind_speed_kn,
+                wind_direction_deg=leg.wind_direction_deg,
+                wave_height_m=leg.wave_height_m,
+                wave_period_s=leg.wave_period_s,
+                current_speed_kn=leg.current_speed_kn,
+                current_direction_deg=leg.current_direction_deg,
+                relative_wind_dir=leg.relative_wind_dir,
+                relative_current_dir=leg.relative_current_dir,
+                along_track_current_kn=leg.along_track_current_kn,
+                effective_speed_kn=leg.effective_speed_kn,
+                time_score=leg.time_score,
+                fuel_score=leg.fuel_score,
+                wind_score=leg.wind_score,
+                wave_score=leg.wave_score,
+                current_score=leg.current_score,
+                safety_score=leg.safety_score,
+            )
+            for leg in res["legs"]
         ],
     )
 

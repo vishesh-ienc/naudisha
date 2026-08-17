@@ -13,7 +13,7 @@ interface MapLegendProps {
 export function MapLegend({
   hasWindData = true,
   hasCurrentData = true,
-  hasDirectRoute = true,
+  hasDirectRoute: _hasDirectRoute = true,
   className,
 }: MapLegendProps) {
   const [isOpen, setIsOpen] = useState(true)
@@ -53,6 +53,14 @@ export function MapLegend({
 
 
 
+
+            {/* Indian Ocean Seaports (Cyan dot) */}
+            <div className="flex items-center gap-2">
+              <span className="flex h-3 w-3 items-center justify-center rounded-full border border-sky-400 bg-sky-400/30">
+                <span className="h-1 w-1 rounded-full bg-sky-300" />
+              </span>
+              <span className="text-sky-300 font-medium">Indian Ocean Seaports &amp; Hubs</span>
+            </div>
 
             {/* Ship Marker */}
             <div className="flex items-center gap-2">

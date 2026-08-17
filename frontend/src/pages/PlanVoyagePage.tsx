@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   Calendar,
   ChevronDown,
+  Radio,
   RefreshCw,
   Route as RouteIcon,
   Sparkles,
@@ -27,12 +28,15 @@ import { PortSearchInput } from '@/components/route/PortSearchInput'
 import { VesselTypeSelect } from '@/components/ship/VesselTypeSelect'
 import { ObjectiveSelector } from '@/components/route/ObjectiveSelector'
 import { CalculationConsole } from '@/components/route/CalculationConsole'
-import { MapCanvas } from '@/map/MapCanvas'
+import { VoyageSimulatorConsole } from '@/components/route/VoyageSimulatorConsole'
+import { MapCanvas, type SimulationHazard } from '@/map/MapCanvas'
 import { useRoutePlan } from '@/hooks/useRoutePlan'
 import { STANDARD_VESSEL_TYPES, vesselToParticulars, type StandardVesselType } from '@/lib/vessels'
-import type { Coordinate, OptimizationObjective } from '@/types/api'
+import type { Coordinate, OptimizationObjective, RouteLeg } from '@/types/api'
+import type { NamedLocation } from '@/lib/ports'
 import { haversineNm } from '@/lib/geo'
 import { toDatetimeLocalValue } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 export function PlanVoyagePage() {
   // 0. Optimization Objective (Defaults to Balanced)
@@ -47,6 +51,15 @@ export function PlanVoyagePage() {
 
   // 3. Departure Date/Time
   const [departure, setDeparture] = useState(() => toDatetimeLocalValue(new Date(Date.now() + 3600_000)))
+
+  // 4. Live Simulation & Dynamic Replanning State
+  const [isSimulationActive, setIsSimulationActive] = useState<boolean>(false)
+  const [simulatedShipPos, setSimulatedShipPos] = useState<Coordinate | null>(null)
+  const [simulatedShipHeading, setSimulatedShipHeading] = useState<number>(180)
+  const [simulatedRoute, setSimulatedRoute] = useState<Coordinate[] | null>(null)
+  const [simulatedPreviousRoute, setSimulatedPreviousRoute] = useState<Coordinate[]>([])
+  const [simulatedLegs, setSimulatedLegs] = useState<RouteLeg[] | null>(null)
+  const [simulatedHazard, setSimulatedHazard] = useState<SimulationHazard | null>(null)
 
   // Toast / scroll state
   const [showScrollToast, setShowScrollToast] = useState(false)
@@ -219,6 +232,32 @@ export function PlanVoyagePage() {
                 </Button>
               </div>
 
+              {/* Real-Time D* Lite Replanning Simulator Button */}
+              <div className="pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  className={cn(
+                    'w-full font-semibold border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/20 shadow-md transition-all',
+                    isSimulationActive ? 'bg-cyan-500/20 ring-2 ring-cyan-400' : 'bg-slate-900/60'
+                  )}
+                  onClick={() => {
+                    if (!route?.route || route.route.length === 0) {
+                      // Set Mumbai to Dubai demo coordinates if none selected
+                      if (!originCoord) setOriginCoord({ latitude: 18.95, longitude: 72.82 })
+                      if (!destCoord) setDestCoord({ latitude: 25.26, longitude: 55.28 })
+                    }
+                    setIsSimulationActive(!isSimulationActive)
+                  }}
+                >
+                  <span className="flex items-center justify-center gap-2">
+                    <Radio className="h-4 w-4 text-cyan-400 animate-pulse" />
+                    {isSimulationActive ? 'Hide Live Simulation' : 'Simulate Real-Time D* Lite Replanning'}
+                  </span>
+                </Button>
+              </div>
+
               {planError && (
                 <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                   <div className="flex items-center gap-1.5 font-semibold">
@@ -237,20 +276,50 @@ export function PlanVoyagePage() {
 
         {/* Right Dominant Map (8 cols) */}
         <div ref={mapRef} className="lg:col-span-8 xl:col-span-8">
-          <div className="h-[560px] w-full lg:h-[640px]">
+          <div className="relative h-[560px] w-full lg:h-[640px]">
             <MapCanvas
               start={originCoord}
               destination={destCoord}
-              route={route?.route ?? []}
-              legs={route?.legs ?? []}
-              shipPosition={originCoord}
-              shipHeading={route?.legs?.[0]?.bearing ?? 180}
-              positionSource="static"
+              route={simulatedRoute ?? (route?.route ?? [])}
+              previousRoute={simulatedPreviousRoute}
+              legs={simulatedLegs ?? (route?.legs ?? [])}
+              shipPosition={simulatedShipPos ?? (originCoord || (route?.route?.[0] ?? null))}
+              shipHeading={simulatedShipHeading}
+              positionSource={isSimulationActive ? 'simulated' : 'static'}
               shipName={selectedVessel.name}
               showVectors={true}
               showLegend={true}
+              showPorts={true}
+              simulationHazard={simulatedHazard}
+              onSelectPort={(port: NamedLocation, asType: 'origin' | 'destination') => {
+                if (asType === 'origin') {
+                  setOriginCoord(port.coordinate)
+                } else {
+                  setDestCoord(port.coordinate)
+                }
+              }}
             />
 
+            {/* D* Lite Dynamic Simulation Floating Console Overlay */}
+            {isSimulationActive && (
+              <VoyageSimulatorConsole
+                originalRoute={route?.route && route.route.length > 0 ? route.route : [originCoord || { latitude: 18.95, longitude: 72.82 }, destCoord || { latitude: 25.26, longitude: 55.28 }]}
+                activeLegs={route?.legs ?? []}
+                onShipMove={(pos, heading) => {
+                  setSimulatedShipPos(pos)
+                  setSimulatedShipHeading(heading)
+                }}
+                onRouteUpdate={(newR, prevR, newLegs) => {
+                  setSimulatedRoute(newR)
+                  setSimulatedPreviousRoute(prevR)
+                  setSimulatedLegs(newLegs)
+                }}
+                onHazardUpdate={(hazard) => {
+                  setSimulatedHazard(hazard)
+                }}
+                onClose={() => setIsSimulationActive(false)}
+              />
+            )}
           </div>
         </div>
       </div>

@@ -187,6 +187,18 @@ export const liveMessageSchema = z.discriminatedUnion('type', [
 ])
 
 
+export const dynamicReplanResponseSchema = z.object({
+  new_route: z.array(coordinateSchema),
+  previous_route: z.array(coordinateSchema),
+  replan_time_ms: z.number(),
+  affected_edges_count: z.number(),
+  hazard_avoidance_score: z.number(),
+  distance_nm: z.number(),
+  estimated_time_hours: z.number(),
+  total_cost: z.number(),
+  legs: z.array(routeLegSchema).default([]),
+})
+
 export const apiErrorResponseSchema = z.object({ error: apiErrorDetailSchema })
 
 export const healthResponseSchema = z.object({
