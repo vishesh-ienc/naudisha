@@ -130,24 +130,14 @@ export function VoyageSimulatorConsole({
     return () => clearInterval(interval)
   }, [isPlaying, speedMultiplier, currentWaypointIdx, onShipMove])
 
-  // Trigger Dynamic Hazard and Animated Real-Time Route Diversion
+  // Trigger Dynamic Hazard at EXACT Ship Location and Animate Real-Time Route Diversion
   const handleInjectHazard = async (type: 'storm' | 'current' | 'restricted') => {
     if (originalRoute.length < 2) return
 
-    // Position hazard ahead in open sea (never right on the destination port or origin)
-    let hazardCenter: Coordinate
-    if (originalRoute.length > 5) {
-      const forwardIdx = Math.min(
-        originalRoute.length - 2,
-        currentWaypointIdx + Math.max(1, Math.floor((originalRoute.length - currentWaypointIdx) * 0.35))
-      )
-      hazardCenter = originalRoute[forwardIdx] || currentPosition
-    } else {
-      const dest = originalRoute[originalRoute.length - 1] || currentPosition
-      hazardCenter = {
-        latitude: (currentPosition.latitude + dest.latitude) / 2,
-        longitude: (currentPosition.longitude + dest.longitude) / 2,
-      }
+    // Position hazard at the EXACT current position of the ship
+    const hazardCenter: Coordinate = {
+      latitude: Number(currentPosition.latitude.toFixed(4)),
+      longitude: Number(currentPosition.longitude.toFixed(4)),
     }
 
     const hazardName =
@@ -159,33 +149,39 @@ export function VoyageSimulatorConsole({
 
     const hazardDesc =
       type === 'storm'
-        ? 'Dangerous sea state: 5.5m significant waves & 48 kn sustained winds. Passage core blocked.'
+        ? 'Dangerous sea state: 5.5m significant waves & 48 kn sustained winds. Immediate passage blocked.'
         : type === 'current'
         ? 'Strong opposing 3.5 kn current creating heavy hydrodynamic drag.'
         : 'Restricted naval navigation zone.'
+
+    const hazardRadius = type === 'storm' ? 30 : 22
 
     const hazard: SimulationHazard = {
       id: `hazard-${Date.now()}`,
       name: hazardName,
       type,
       center: hazardCenter,
-      radiusNm: type === 'storm' ? 35 : 25,
+      radiusNm: hazardRadius,
       severity: 1.2,
       description: hazardDesc,
     }
 
     setActiveHazard(hazard)
     onHazardUpdate(hazard)
-    addLog('hazard', `Hazard Injected: ${hazardName} at ${formatCoordinate(hazard.center, 2)} (${hazard.radiusNm} NM radius).`)
+    addLog(
+      'hazard',
+      `Hazard Encountered at Vessel Fix ${formatCoordinate(hazard.center, 3)}: ${hazardName} (${hazard.radiusNm} NM radius).`
+    )
 
     // Call Backend Dynamic Replan API
     setIsReplanning(true)
-    addLog('replan', 'D* Lite evaluating affected graph edges in real time...')
+    addLog('replan', 'D* Lite dynamic edge perturbation triggered: recalculating seaward path around storm...')
 
     try {
+      const dest = originalRoute[originalRoute.length - 1] || currentPosition
       const response = await simulateDynamicReplan({
         current_position: currentPosition,
-        destination: originalRoute[originalRoute.length - 1] || currentPosition,
+        destination: dest,
         active_route: originalRoute,
         hazard: {
           id: hazard.id,
@@ -203,14 +199,13 @@ export function VoyageSimulatorConsole({
         ...response.new_route,
       ]
 
-      // Visually animate the route bending outward in real-time steps
+      // Visually animate the route bending outward around the storm in real-time steps
       const oldRoute = [...originalRoute]
       let frame = 0
       const totalFrames = 6
       const animInterval = setInterval(() => {
         frame++
         const alpha = frame / totalFrames
-        // Interpolate waypoints
         const interpolatedRoute = fullDivertedRoute.map((targetPt, i) => {
           const startPt = oldRoute[Math.min(i, oldRoute.length - 1)] || targetPt
           return {
@@ -227,11 +222,13 @@ export function VoyageSimulatorConsole({
         }
       }, 50)
 
-      // Calculate altered bearing
+      // Calculate altered bearing towards diversion waypoint
       const newNextPt = response.new_route[1] || response.new_route[0]
       if (newNextPt) {
         const newBearing = bearingDeg(currentPosition, newNextPt)
         setDivertedCourseDeg(newBearing)
+        setCurrentHeading(newBearing)
+        onShipMove(currentPosition, newBearing)
       }
 
       setReplanStats({
@@ -243,7 +240,7 @@ export function VoyageSimulatorConsole({
 
       addLog(
         'replan',
-        `D* Lite path repair completed in ${response.replan_time_ms.toFixed(1)} ms! Altered course to safely skirt storm perimeter.`
+        `D* Lite path repaired in ${response.replan_time_ms.toFixed(1)} ms! Route diverted safely around storm perimeter.`
       )
     } catch (err: unknown) {
       console.warn('Simulation replan fallback:', err)

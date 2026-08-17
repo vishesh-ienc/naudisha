@@ -56,6 +56,25 @@ def _opt_round(value: Optional[float], digits: int) -> Optional[float]:
     return None if value is None else round(value, digits)
 
 
+def is_segment_crossing_circle(
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float,
+    center_lat: float,
+    center_lon: float,
+    radius_nm: float,
+    samples: int = 15,
+) -> bool:
+    """Returns True if the line segment (lat1, lon1) -> (lat2, lon2) passes within radius_nm of (center_lat, center_lon)."""
+    for frac in np.linspace(0.0, 1.0, samples):
+        plat = lat1 + (lat2 - lat1) * frac
+        plon = lon1 + (lon2 - lon1) * frac
+        if calculate_haversine_distance(plat, plon, center_lat, center_lon) < radius_nm:
+            return True
+    return False
+
+
 @dataclass
 class RouteLegResult:
     """
@@ -622,7 +641,7 @@ class RoutePlanningService:
             if node:
                 raw_coords.append((round(node.lat, 4), round(node.lon, 4)))
 
-        # Line of sight smoothing with high-resolution land collision check
+        # Line of sight smoothing preserving both land safety and storm perimeter clearance
         smoothed_coords: List[Tuple[float, float]] = [raw_coords[0]]
         curr_i = 0
         n_pts = len(raw_coords)
@@ -631,7 +650,13 @@ class RoutePlanningService:
             for next_i in range(n_pts - 1, curr_i, -1):
                 p1 = raw_coords[curr_i]
                 p2 = raw_coords[next_i]
-                if not is_segment_crossing_land(p1[0], p1[1], p2[0], p2[1], sample_spacing_nm=1.0):
+                crosses_land = is_segment_crossing_land(p1[0], p1[1], p2[0], p2[1], sample_spacing_nm=1.0)
+                crosses_hazard = is_segment_crossing_circle(
+                    p1[0], p1[1], p2[0], p2[1],
+                    hazard_lat, hazard_lon,
+                    hazard_radius_nm * 0.65,
+                )
+                if not crosses_land and not crosses_hazard:
                     farthest_i = next_i
                     break
             smoothed_coords.append(raw_coords[farthest_i])
