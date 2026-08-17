@@ -451,7 +451,7 @@ class RoutePlanningService:
             for next_i in range(len(raw_coords) - 1, curr_i, -1):
                 p1 = raw_coords[curr_i]
                 p2 = raw_coords[next_i]
-                if not is_segment_crossing_land(p1[0], p1[1], p2[0], p2[1], sample_spacing_nm=3.0):
+                if not is_segment_crossing_land(p1[0], p1[1], p2[0], p2[1], sample_spacing_nm=1.0):
                     farthest_i = next_i
                     break
             smoothed_coords.append(raw_coords[farthest_i])
@@ -469,13 +469,14 @@ class RoutePlanningService:
                 lats = np.linspace(p1[0], p2[0], steps + 1)[1:]
                 lons = np.linspace(p1[1], p2[1], steps + 1)[1:]
                 for lat, lon in zip(lats, lons):
-                    dense_track.append((float(lat), float(lon)))
+                    if not is_point_on_land(float(lat), float(lon)):
+                        dense_track.append((float(lat), float(lon)))
             else:
                 dense_track.append(p2)
 
-        # Safety validation: Ensure no interpolated waypoint falls on land
-        has_land_violation = any(is_point_on_land(pt[0], pt[1]) for pt in dense_track)
-        if has_land_violation:
+        # Safety validation: Ensure all final waypoints are in navigable water
+        dense_track = [pt for pt in dense_track if not is_point_on_land(pt[0], pt[1])]
+        if len(dense_track) < 2:
             dense_track = raw_coords
 
         t_smooth = (time.perf_counter() - t_smooth_start) * 1000.0
@@ -917,17 +918,30 @@ class RoutePlanningService:
         lat: float,
         lon: float,
     ) -> Optional[str]:
-        """Finds the ID of the nearest navigable node in the graph to the given coordinates."""
+        """Finds the ID of the nearest navigable node in the graph with unobstructed line-of-sight."""
         best_id: Optional[str] = None
         best_dist = float("inf")
 
+        # 1. Prefer nodes with direct line-of-sight (does not cross land)
         for node in graph.get_all_nodes():
             if not node.is_navigable:
+                continue
+            if is_segment_crossing_land(lat, lon, node.lat, node.lon, sample_spacing_nm=1.0):
                 continue
             dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
             if dist < best_dist:
                 best_dist = dist
                 best_id = node.node_id
+
+        # 2. Fallback if harbor is deeply enclosed: nearest navigable node
+        if best_id is None:
+            for node in graph.get_all_nodes():
+                if not node.is_navigable:
+                    continue
+                dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_id = node.node_id
 
         return best_id
 
@@ -938,17 +952,28 @@ class RoutePlanningService:
         lon: float,
         exclude_id: str,
     ) -> Optional[str]:
-        """Finds the second closest navigable node, excluding the specified node ID."""
+        """Finds the ID of the second nearest navigable node with unobstructed line-of-sight."""
         best_id: Optional[str] = None
         best_dist = float("inf")
 
         for node in graph.get_all_nodes():
             if not node.is_navigable or node.node_id == exclude_id:
                 continue
+            if is_segment_crossing_land(lat, lon, node.lat, node.lon, sample_spacing_nm=1.0):
+                continue
             dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
             if dist < best_dist:
                 best_dist = dist
                 best_id = node.node_id
+
+        if best_id is None:
+            for node in graph.get_all_nodes():
+                if not node.is_navigable or node.node_id == exclude_id:
+                    continue
+                dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_id = node.node_id
 
         return best_id
 

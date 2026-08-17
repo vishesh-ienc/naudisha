@@ -367,26 +367,25 @@ def is_segment_crossing_land(
 
 def is_cross_peninsular_voyage(start_lat: float, start_lon: float, dest_lat: float, dest_lon: float) -> bool:
     """
-    Detects if a voyage is between the Western quadrant (Arabian Sea, West Coast of India,
-    Gulf of Mannar, West Coast of Sri Lanka) and the Eastern quadrant (Bay of Bengal,
-    East Coast of India, East Coast of Sri Lanka), where direct sea routes are blocked
-    by the Indian subcontinent, Sri Lanka, and Adam's Bridge reef.
+    Detects if a voyage is between the Western quadrant (Arabian Sea, West Coast of India)
+    and the Eastern quadrant (Gulf of Mannar, Bay of Bengal, East Coast of India/Sri Lanka),
+    where nautical navigation must round Cape Comorin (8.08°N) and/or Sri Lanka.
     """
     def is_west_side(lat: float, lon: float) -> bool:
-        # Arabian Sea / Indian west coast / Gulf of Mannar (Tuticorin)
-        if lat >= 8.0 and lon <= 78.5:
+        # Arabian Sea / Indian west coast (Gujarat to Trivandrum)
+        if lat >= 8.0 and lon <= 77.55:
             return True
         # Sri Lanka west coast (Colombo, Negombo, Kalpitiya)
-        if 5.5 <= lat <= 10.0 and lon <= 80.0:
+        if 5.5 <= lat <= 10.0 and lon <= 79.90:
             return True
         return False
 
     def is_east_side(lat: float, lon: float) -> bool:
-        # Bay of Bengal / Indian east coast (Chennai, Vizag, Kolkata, Kakinada)
-        if lat >= 9.0 and lon >= 79.5:
+        # Gulf of Mannar / Coromandel / Bay of Bengal (Tuticorin, Chennai, Vizag, Kolkata)
+        if lat >= 8.40 and lon >= 77.80:
             return True
-        # Sri Lanka east coast (Trincomalee, Batticaloa)
-        if 6.0 <= lat <= 10.0 and lon >= 81.0:
+        # Sri Lanka east coast (Trincomalee, Batticaloa, Hambantota East)
+        if 6.0 <= lat <= 10.0 and lon >= 81.00:
             return True
         return False
 
