@@ -131,15 +131,18 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
             return {}
 
         request_list = list(requests)
+        self.last_marine_source = "copernicus_live"
+        self.last_wind_source = "open_meteo_live"
 
         # 1 & 2. Concurrently fetch CMEMS marine batch and Open-Meteo wind batch in parallel
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="env_batch") as pool:
             fut_marine = pool.submit(self.marine_provider.fetch_conditions_batch, request_list)
             fut_wind = pool.submit(self.wind_provider.fetch_wind_batch, request_list)
             try:
-                marine_results = fut_marine.result(timeout=6.0)
+                marine_results = fut_marine.result(timeout=4.0)
             except Exception as exc:
                 logger.warning("Copernicus Marine batch query timed out or failed (%s), defaulting to hydrodynamic baseline.", exc)
+                self.last_marine_source = "climatology_fallback"
                 marine_results = {
                     req: EnvironmentalData(
                         timestamp=req.timestamp if isinstance(req.timestamp, str) else req.timestamp.isoformat(),
@@ -152,9 +155,10 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
                     for req in request_list
                 }
             try:
-                wind_results = fut_wind.result(timeout=4.0)
+                wind_results = fut_wind.result(timeout=3.5)
             except Exception as exc:
                 logger.warning("Open-Meteo batch wind fetch failed (%s), defaulting to seasonal monsoon wind model.", exc)
+                self.last_wind_source = "climatology_fallback"
                 wind_results = {
                     req: _get_climatological_wind(req.lat, req.lon, _normalize_utc_datetime(req.timestamp))
                     for req in request_list

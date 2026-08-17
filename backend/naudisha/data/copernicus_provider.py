@@ -623,7 +623,7 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
                 df_cur = cached_bbox[4]
                 df_wav = cached_bbox[5]
             else:
-                # ONE currents + ONE waves request for the entire bucket, issued concurrently.
+                # ONE currents + ONE waves request for the entire bucket, issued concurrently with strict 3.5s timeout.
                 with ThreadPoolExecutor(max_workers=2, thread_name_prefix="cmems") as pool:
                     fut_cur = pool.submit(
                         self._execute_bbox_subset_query,
@@ -649,8 +649,14 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
                         end_dt=end_dt,
                         depth_level=None,
                     )
-                    df_cur = fut_cur.result()
-                    df_wav = fut_wav.result()
+                    try:
+                        df_cur = fut_cur.result(timeout=3.5)
+                        df_wav = fut_wav.result(timeout=3.5)
+                    except CopernicusProviderError:
+                        raise
+                    except Exception as exc:
+                        logger.warning("CMEMS subset query timeout or network error (%s), raising provider exception.", exc)
+                        raise CopernicusProviderError(f"CMEMS batch subset query failed or timed out: {exc}") from exc
 
                 if self.enable_cache:
                     self._bbox_df_cache[bucket_key] = (lat_min, lat_max, lon_min, lon_max, df_cur, df_wav)

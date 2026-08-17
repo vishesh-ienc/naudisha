@@ -258,6 +258,10 @@ class RoutePreviewResponse(BaseModel):
         default_factory=list,
         description="Per-segment environmental and cost breakdown explaining the route choice",
     )
+    environment_source: Optional[str] = Field(
+        "copernicus_live",
+        description="Source provenance of environmental data (copernicus_live, open_meteo_live, cached, climatology_fallback)",
+    )
 
 
 class ShipIdentifyRequest(BaseModel):

@@ -114,7 +114,7 @@ class OpenMeteoWindProvider(WeatherProvider):
     def __init__(
         self,
         api_url: str = DEFAULT_API_URL,
-        timeout: float = 10.0,
+        timeout: float = 3.0,
         enable_cache: bool = True,
         fetcher_fn: Optional[Callable[[str, float], Dict[str, Any]]] = None,
     ) -> None:
@@ -123,7 +123,7 @@ class OpenMeteoWindProvider(WeatherProvider):
 
         Args:
             api_url: Open-Meteo forecast endpoint URL.
-            timeout: HTTP request timeout in seconds (default: 10.0s).
+            timeout: HTTP request timeout in seconds (default: 3.0s).
             enable_cache: When True, caches spatial/temporal queries in memory.
             fetcher_fn: Optional callable for fetching raw JSON (used for dependency injection / offline testing).
         """
@@ -155,22 +155,15 @@ class OpenMeteoWindProvider(WeatherProvider):
                     raw_data = response.read().decode("utf-8")
                     return json.loads(raw_data)
             except urllib.error.HTTPError as http_err:
-                if http_err.code in (429, 500, 502, 503, 504) and attempt < max_retries:
-                    logger.warning(
-                        "Open-Meteo returned HTTP %d, retrying in %.1fs (attempt %d/%d)...",
-                        http_err.code,
-                        backoff_seconds,
-                        attempt,
-                        max_retries,
-                    )
-                    time.sleep(backoff_seconds)
-                    backoff_seconds *= 2.0
+                if http_err.code == 429:
+                    raise WindNetworkError(f"Open-Meteo rate limit (429): {http_err.reason}") from http_err
+                if http_err.code in (500, 502, 503, 504) and attempt < max_retries:
+                    time.sleep(0.2)
                     continue
                 raise WindNetworkError(f"HTTP error ({http_err.code}) querying Open-Meteo: {http_err.reason}") from http_err
             except (urllib.error.URLError, TimeoutError) as net_err:
                 if attempt < max_retries:
-                    time.sleep(backoff_seconds)
-                    backoff_seconds *= 2.0
+                    time.sleep(0.2)
                     continue
                 raise WindNetworkError(f"Network error communicating with Open-Meteo: {net_err}") from net_err
             except json.JSONDecodeError as json_err:
@@ -353,12 +346,14 @@ class OpenMeteoWindProvider(WeatherProvider):
 
         unique_req_list = list(unique_cells.values())
 
-        # 3. Query in chunks of up to 50 locations per single HTTP request
+        # 3. Query in chunks of up to 50 locations per single HTTP request (parallelized across chunks)
+        from concurrent.futures import ThreadPoolExecutor
         chunk_size = 50
+        chunks = [unique_req_list[i : i + chunk_size] for i in range(0, len(unique_req_list), chunk_size)]
         batch_parsed: Dict[Tuple[float, float, str], Tuple[float, float]] = {}
 
-        for i in range(0, len(unique_req_list), chunk_size):
-            chunk = unique_req_list[i : i + chunk_size]
+        def _fetch_single_chunk(chunk: List[Any]) -> Dict[Tuple[float, float, str], Tuple[float, float]]:
+            chunk_results: Dict[Tuple[float, float, str], Tuple[float, float]] = {}
             lats_str = ",".join(f"{r.lat:.4f}" for r in chunk)
             lons_str = ",".join(f"{r.lon:.4f}" for r in chunk)
 
@@ -386,18 +381,27 @@ class OpenMeteoWindProvider(WeatherProvider):
                     dt_utc = _normalize_utc_datetime(r.timestamp)
                     cell_key = _to_cache_key(r.lat, r.lon, dt_utc)
                     parsed = self._parse_single_hourly_payload(loc_payload, dt_utc, lat=r.lat, lon=r.lon)
-                    batch_parsed[cell_key] = parsed
-                    if self.enable_cache:
-                        self._cache[cell_key] = parsed
+                    chunk_results[cell_key] = parsed
             except Exception as exc:
                 logger.warning("Open-Meteo batch wind fetch failed (%s), defaulting to seasonal monsoon model.", exc)
                 for r in chunk:
                     dt_utc = _normalize_utc_datetime(r.timestamp)
                     cell_key = _to_cache_key(r.lat, r.lon, dt_utc)
-                    fallback_val = _get_climatological_wind(r.lat, r.lon, dt_utc)
-                    batch_parsed[cell_key] = fallback_val
-                    if self.enable_cache:
-                        self._cache[cell_key] = fallback_val
+                    chunk_results[cell_key] = _get_climatological_wind(r.lat, r.lon, dt_utc)
+            return chunk_results
+
+        if len(chunks) == 1:
+            res = _fetch_single_chunk(chunks[0])
+            batch_parsed.update(res)
+        elif len(chunks) > 1:
+            with ThreadPoolExecutor(max_workers=min(4, len(chunks)), thread_name_prefix="om_chunk") as pool:
+                futures = [pool.submit(_fetch_single_chunk, chunk) for chunk in chunks]
+                for fut in futures:
+                    batch_parsed.update(fut.result())
+
+        if self.enable_cache:
+            for cell_key, val in batch_parsed.items():
+                self._cache[cell_key] = val
 
         # 4. Populate results for all uncached requests
         for req in uncached_reqs:

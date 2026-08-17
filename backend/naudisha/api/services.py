@@ -134,6 +134,7 @@ class RoutePlanResult:
     legs: List[RouteLegResult] = field(default_factory=list)
     optimization_objective: str = "balanced"
     cost_weights: Dict[str, float] = field(default_factory=dict)
+    environment_source: str = "copernicus_live"
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +199,9 @@ def _weights_to_dict(w: CostWeights) -> Dict[str, float]:
     }
 
 
+import threading
+import time
+
 class RoutePlanningService:
     """
     Orchestration service for calculating optimal maritime routes.
@@ -248,6 +252,10 @@ class RoutePlanningService:
         self.cost_model = cost_model or CostModel(default_weights=self.default_weights)
         self.graph_factory = graph_factory
         self.grid_resolution_deg = grid_resolution_deg
+        # Two-level in-memory corridor environment cache:
+        # (round(start_lat, 2), round(start_lon, 2), round(dest_lat, 2), round(dest_lon, 2), hour_key) -> (stored_at, GeographicGridGraph, env_source)
+        self._corridor_env_cache: Dict[Tuple, Tuple[float, GeographicGridGraph, str]] = {}
+        self._corridor_cache_lock = threading.Lock()
 
     def plan_preview_route(
         self,
@@ -263,26 +271,9 @@ class RoutePlanningService:
     ) -> RoutePlanResult:
         """
         Calculates an optimal route between start and destination coordinates.
-
-        Args:
-            imo_number: Optional ship identifier string.
-            start_lat: Departure latitude [-90.0, 90.0].
-            start_lon: Departure longitude [-180.0, 180.0].
-            dest_lat: Destination latitude [-90.0, 90.0].
-            dest_lon: Destination longitude [-180.0, 180.0].
-            timestamp: Optional UTC timestamp for environmental sampling.
-            ship_profile: Optional vessel profile (falls back to service default).
-            optimization_objective: Optional objective (fuel_efficiency, fastest, safety, balanced).
-            stage_callback: Optional progress reporter callback (stage_id, progress_percent, message).
-
-        Returns:
-            RoutePlanResult containing waypoints, distance, time, cost, departure_time, and eta.
-
-        Raises:
-            InvalidCoordinatesError: If coordinates are out of bounds.
-            EnvironmentUnavailableError: If environmental data provider fails.
-            RouteNotFoundError: If no navigable route exists.
         """
+        t_perf_start = time.perf_counter()
+
         # 1. Coordinate validation
         if not (-90.0 <= start_lat <= 90.0 and -90.0 <= dest_lat <= 90.0):
             raise InvalidCoordinatesError("Latitude must be between -90.0 and 90.0 degrees.")
@@ -322,52 +313,96 @@ class RoutePlanningService:
                 eta=dep_iso,
                 optimization_objective=effective_objective,
                 cost_weights=weights_dict,
+                environment_source="instant",
             )
 
-        # 2. Build or retrieve graph covering voyage corridor
-        if stage_callback:
-            stage_callback("building_grid", 15.0, "Building geographic navigation corridor")
+        # Check Corridor Environment Cache (Two-Level Cache)
+        corridor_key = (
+            round(start_lat, 2),
+            round(start_lon, 2),
+            round(dest_lat, 2),
+            round(dest_lon, 2),
+            dep_iso[:13],  # hourly temporal bucket
+        )
 
-        if self.graph_factory:
-            graph = self.graph_factory(start_lat, start_lon, dest_lat, dest_lon)
+        cached_graph: Optional[GeographicGridGraph] = None
+        env_source = "copernicus_live"
+
+        with self._corridor_cache_lock:
+            if corridor_key in self._corridor_env_cache:
+                stored_at, g, src = self._corridor_env_cache[corridor_key]
+                if time.monotonic() - stored_at < 1800.0:  # 30 min TTL
+                    cached_graph = g
+                    env_source = f"{src}_cached"
+
+        t_grid_start = time.perf_counter()
+        t_env_ingest = 0.0
+        t_cost_eval = 0.0
+
+        if cached_graph is not None:
+            graph = cached_graph
+            t_grid_gen = (time.perf_counter() - t_grid_start) * 1000.0
+            if stage_callback:
+                stage_callback("sampling_environment", 40.0, "Reusing environmental conditions from corridor cache")
+            # Objective-switching fast path: Re-evaluate edge costs with new CostWeights in <2ms
+            t_cost_start = time.perf_counter()
+            for (src_id, tgt_id), edge in graph._edges.items():
+                if edge.is_navigable and edge.env_data is not None:
+                    graph.recalculate_edge_cost(src_id, tgt_id, ship=effective_ship, weights=effective_weights)
+            t_cost_eval = (time.perf_counter() - t_cost_start) * 1000.0
         else:
-            graph = self._build_bounding_grid(start_lat, start_lon, dest_lat, dest_lon, ship=effective_ship)
+            # 2. Build or retrieve graph covering voyage corridor
+            if stage_callback:
+                stage_callback("building_grid", 15.0, "Building geographic navigation corridor")
 
-        # 3. Populate environment using BatchCapableProvider pipeline
-        if stage_callback:
-            stage_callback("sampling_environment", 35.0, "Sampling ocean currents, waves & atmospheric wind fields")
+            if self.graph_factory:
+                graph = self.graph_factory(start_lat, start_lon, dest_lat, dest_lon)
+            else:
+                graph = self._build_bounding_grid(start_lat, start_lon, dest_lat, dest_lon, ship=effective_ship)
+            t_grid_gen = (time.perf_counter() - t_grid_start) * 1000.0
 
-        if self.environment_provider is not None:
-            try:
-                graph.populate_environment(
+            # 3. Populate environment using BatchCapableProvider pipeline
+            if stage_callback:
+                stage_callback("sampling_environment", 35.0, "Sampling ocean currents, waves & atmospheric wind fields")
+
+            t_env_start = time.perf_counter()
+            if self.environment_provider is not None:
+                try:
+                    graph.populate_environment(
+                        timestamp=dep_iso,
+                        provider=self.environment_provider,
+                        ship=effective_ship,
+                        weights=effective_weights,
+                    )
+                    if hasattr(self.environment_provider, "last_marine_source"):
+                        env_source = self.environment_provider.last_marine_source
+                except GridEnvironmentUpdateError as exc:
+                    logger.error("Environmental update failed: %s", exc)
+                    raise EnvironmentUnavailableError(f"Environmental service update failed: {exc}") from exc
+                except Exception as exc:
+                    logger.error("Unexpected error fetching environmental data: %s", exc)
+                    raise EnvironmentUnavailableError(f"Environmental data fetch failed: {exc}") from exc
+            else:
+                env_source = "climatology_fallback"
+                baseline_env = EnvironmentalData(
                     timestamp=dep_iso,
-                    provider=self.environment_provider,
+                    current_speed=0.2,
+                    current_direction=90.0,
+                    wave_height=1.0,
+                    wave_direction=90.0,
+                    wave_period=6.0,
+                    wind_speed=10.0,
+                    wind_direction=90.0,
+                )
+                graph.populate_uniform_environment(
+                    env=baseline_env,
                     ship=effective_ship,
                     weights=effective_weights,
                 )
-            except GridEnvironmentUpdateError as exc:
-                logger.error("Environmental update failed: %s", exc)
-                raise EnvironmentUnavailableError(f"Environmental service update failed: {exc}") from exc
-            except Exception as exc:
-                logger.error("Unexpected error fetching environmental data: %s", exc)
-                raise EnvironmentUnavailableError(f"Environmental data fetch failed: {exc}") from exc
-        else:
-            # Baseline calm maritime conditions if explicitly unconfigured
-            baseline_env = EnvironmentalData(
-                timestamp=dep_iso,
-                current_speed=0.2,
-                current_direction=90.0,
-                wave_height=1.0,
-                wave_direction=90.0,
-                wave_period=6.0,
-                wind_speed=10.0,
-                wind_direction=90.0,
-            )
-            graph.populate_uniform_environment(
-                env=baseline_env,
-                ship=effective_ship,
-                weights=effective_weights,
-            )
+            t_env_ingest = (time.perf_counter() - t_env_start) * 1000.0
+
+            with self._corridor_cache_lock:
+                self._corridor_env_cache[corridor_key] = (time.monotonic(), graph, env_source)
 
         # 4. Map start and destination to grid nodes
         start_node_id = self._find_nearest_node_id(graph, start_lat, start_lon)
@@ -377,7 +412,6 @@ class RoutePlanningService:
             raise RouteNotFoundError("Could not map start or destination to a navigable grid node.")
 
         if start_node_id == dest_node_id and not math_isclose_coords(start_lat, start_lon, dest_lat, dest_lon):
-            # If mapped to identical node on coarse grid, select second nearest node for destination
             second_dest = self._find_second_nearest_node_id(graph, dest_lat, dest_lon, exclude_id=start_node_id)
             if second_dest:
                 dest_node_id = second_dest
@@ -386,10 +420,12 @@ class RoutePlanningService:
         if stage_callback:
             stage_callback("solving_dstar", 80.0, "Running D* Lite optimal path search")
 
+        t_dstar_start = time.perf_counter()
         dstar = DStarLite(graph=graph, start_id=start_node_id, goal_id=dest_node_id)
         reachable = dstar.compute_shortest_path()
         path = dstar.get_path()
         cost = dstar.get_path_cost()
+        t_dstar = (time.perf_counter() - t_dstar_start) * 1000.0
 
         if not reachable or not path:
             raise RouteNotFoundError("No navigable maritime route could be found between specified coordinates.")
@@ -398,6 +434,7 @@ class RoutePlanningService:
         if stage_callback:
             stage_callback("reconstructing_route", 95.0, "Assembling smoothed nautical passage & ETAs")
 
+        t_smooth_start = time.perf_counter()
         raw_coords: List[Tuple[float, float]] = []
         raw_coords.append((float(start_lat), float(start_lon)))
         for node_id in path:
@@ -406,10 +443,7 @@ class RoutePlanningService:
                 raw_coords.append((float(node.lat), float(node.lon)))
         raw_coords.append((float(dest_lat), float(dest_lon)))
 
-        # 6a. Nautical Line-of-Sight Path Smoothing (Funnel / String-Pulling):
-        # 6a. Nautical Line-of-Sight Path Smoothing (Funnel / String-Pulling):
-        # Eliminates jagged Manhattan right-angle staircases on open water
-        # while strictly preserving land avoidance around headlands, straits, and islands.
+        # 6a. Nautical Line-of-Sight Path Smoothing
         smoothed_coords: List[Tuple[float, float]] = [raw_coords[0]]
         curr_i = 0
         while curr_i < len(raw_coords) - 1:
@@ -442,8 +476,22 @@ class RoutePlanningService:
         # Safety validation: Ensure no interpolated waypoint falls on land
         has_land_violation = any(is_point_on_land(pt[0], pt[1]) for pt in dense_track)
         if has_land_violation:
-            # Fallback to the collision-free grid waypoints if smoothing clipped a narrow channel
             dense_track = raw_coords
+
+        t_smooth = (time.perf_counter() - t_smooth_start) * 1000.0
+        t_total = (time.perf_counter() - t_perf_start) * 1000.0
+
+        logger.info(
+            "[ROUTE PERF] corridor=[(%.2f, %.2f) -> (%.2f, %.2f)] objective=%s\n"
+            "  grid_generation=%.2fms\n"
+            "  environmental_ingestion=%.2fms (source=%s)\n"
+            "  cost_evaluation=%.2fms\n"
+            "  dstar_lite=%.2fms\n"
+            "  smoothing=%.2fms\n"
+            "  total_backend=%.2fms",
+            start_lat, start_lon, dest_lat, dest_lon, effective_objective,
+            t_grid_gen, t_env_ingest, env_source, t_cost_eval, t_dstar, t_smooth, t_total,
+        )
 
         # 6c. Build RouteLegResults along the smoothed nautical track
         route_coords = [(round(lat, 4), round(lon, 4)) for lat, lon in dense_track]
@@ -530,6 +578,7 @@ class RoutePlanningService:
             legs=legs,
             optimization_objective=effective_objective,
             cost_weights=weights_dict,
+            environment_source=env_source,
         )
 
     def simulate_dynamic_replan(

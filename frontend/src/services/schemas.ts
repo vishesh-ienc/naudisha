@@ -96,6 +96,7 @@ export const routePreviewResponseSchema = z.object({
   optimization_objective: z.string().nullable().optional(),
   cost_weights: z.record(z.string(), z.number()).nullable().optional(),
   legs: z.array(routeLegSchema).optional(),
+  environment_source: z.string().nullable().optional(),
 })
 
 export const apiErrorDetailSchema = z.object({

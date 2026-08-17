@@ -222,6 +222,7 @@ def _to_preview_response(result) -> RoutePreviewResponse:
             )
             for leg in result.legs
         ],
+        environment_source=getattr(result, "environment_source", "copernicus_live"),
     )
 
 

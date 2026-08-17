@@ -122,6 +122,7 @@ export interface RoutePreviewResponse {
   optimization_objective?: string | null
   cost_weights?: Record<string, number> | null
   legs?: RouteLeg[]
+  environment_source?: string | null
 }
 
 // ---------------------------------------------------------------------------
