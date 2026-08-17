@@ -1,6 +1,7 @@
 import { Link, NavLink } from 'react-router-dom'
-import { Compass, LocateFixed, Navigation, Route as RouteIcon } from 'lucide-react'
+import { Compass, LocateFixed, Route as RouteIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
 import { ThemeToggle } from './ThemeToggle'
 import { BackendStatusPill } from './BackendStatusPill'
 
