@@ -130,14 +130,26 @@ export function VoyageSimulatorConsole({
     return () => clearInterval(interval)
   }, [isPlaying, speedMultiplier, currentWaypointIdx, onShipMove])
 
-  // Trigger Dynamic Hazard at EXACT Ship Location and Animate Real-Time Route Diversion
+  // Trigger Dynamic Hazard on Upcoming Track and Animate Real-Time Route Diversion
   const handleInjectHazard = async (type: 'storm' | 'current' | 'restricted') => {
     if (originalRoute.length < 2) return
 
-    // Position hazard at the EXACT current position of the ship
+    // Position hazard on the upcoming track segment ahead of the vessel (12-25 NM ahead)
+    let accumDist = 0
+    let forwardPt = originalRoute[Math.min(currentWaypointIdx + 1, originalRoute.length - 1)] || currentPosition
+    for (let i = currentWaypointIdx; i < originalRoute.length - 1; i++) {
+      const pA = i === currentWaypointIdx ? currentPosition : originalRoute[i]!
+      const pB = originalRoute[i + 1]!
+      accumDist += haversineNm(pA, pB)
+      if (accumDist >= 12 || i === originalRoute.length - 2) {
+        forwardPt = originalRoute[i + 1]!
+        break
+      }
+    }
+
     const hazardCenter: Coordinate = {
-      latitude: Number(currentPosition.latitude.toFixed(4)),
-      longitude: Number(currentPosition.longitude.toFixed(4)),
+      latitude: Number(forwardPt.latitude.toFixed(4)),
+      longitude: Number(forwardPt.longitude.toFixed(4)),
     }
 
     const hazardName =
@@ -170,7 +182,7 @@ export function VoyageSimulatorConsole({
     onHazardUpdate(hazard)
     addLog(
       'hazard',
-      `Hazard Encountered at Vessel Fix ${formatCoordinate(hazard.center, 3)}: ${hazardName} (${hazard.radiusNm} NM radius).`
+      `Hazard Encountered along Ahead Track ${formatCoordinate(hazard.center, 3)}: ${hazardName} (${hazard.radiusNm} NM radius).`
     )
 
     // Call Backend Dynamic Replan API
@@ -194,10 +206,20 @@ export function VoyageSimulatorConsole({
         },
       })
 
-      const fullDivertedRoute = [
+      // Construct clean diverted route: past waypoints + current position + new avoidance track
+      const divertedLegs = response.new_route.filter(
+        (pt) => haversineNm(pt, currentPosition) > 0.3
+      )
+      const fullDivertedRoute: Coordinate[] = [
         ...originalRoute.slice(0, currentWaypointIdx + 1),
-        ...response.new_route,
+        currentPosition,
+        ...divertedLegs,
       ]
+
+      const divergenceIdx = currentWaypointIdx + 1
+      routeRef.current = fullDivertedRoute
+      setCurrentWaypointIdx(divergenceIdx)
+      setProgressRatio(0.0)
 
       // Visually animate the route bending outward around the storm in real-time steps
       const oldRoute = [...originalRoute]
@@ -223,7 +245,7 @@ export function VoyageSimulatorConsole({
       }, 50)
 
       // Calculate altered bearing towards diversion waypoint
-      const newNextPt = response.new_route[1] || response.new_route[0]
+      const newNextPt = divertedLegs[0] || response.new_route[1] || response.new_route[0]
       if (newNextPt) {
         const newBearing = bearingDeg(currentPosition, newNextPt)
         setDivertedCourseDeg(newBearing)
@@ -260,6 +282,7 @@ export function VoyageSimulatorConsole({
     setActiveHazard(null)
     onHazardUpdate(null)
     setDivertedCourseDeg(null)
+    routeRef.current = originalRoute
     onRouteUpdate(originalRoute, [], [])
     addLog('info', 'Weather hazards cleared. Restoring normal passage plan.')
   }
@@ -268,6 +291,7 @@ export function VoyageSimulatorConsole({
     setCurrentWaypointIdx(0)
     setProgressRatio(0.0)
     setIsPlaying(false)
+    routeRef.current = originalRoute
     const initialPos = originalRoute[0] || { latitude: 0, longitude: 0 }
     setCurrentPosition(initialPos)
     onShipMove(initialPos, 0)

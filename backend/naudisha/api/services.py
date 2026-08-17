@@ -620,11 +620,11 @@ class RoutePlanningService:
         start_node_id = self._find_nearest_node_id(grid, current_lat, current_lon)
         dest_node_id = self._find_nearest_node_id(grid, dest_lat, dest_lon)
 
-        # 3. Apply hazard perturbations to affected edges
+        # 3. Apply hazard perturbations to affected edges (strictly impassable for full hazard radius)
         affected_edges = 0
         for edge_key, edge in grid._edges.items():
-            # Terminal nodes must remain accessible so the vessel can navigate to/from port fairways
-            if edge.source_id in (start_node_id, dest_node_id) or edge.target_id in (start_node_id, dest_node_id):
+            # Destination port fairways must remain accessible
+            if edge.source_id == dest_node_id or edge.target_id == dest_node_id:
                 continue
 
             u_node = grid.get_node(edge.source_id)
@@ -635,23 +635,19 @@ class RoutePlanningService:
             mid_lat = (u_node.lat + v_node.lat) / 2.0
             mid_lon = (u_node.lon + v_node.lon) / 2.0
             dist_to_hazard_nm = calculate_haversine_distance(mid_lat, mid_lon, hazard_lat, hazard_lon)
+            crosses_hazard = is_segment_crossing_circle(
+                u_node.lat, u_node.lon, v_node.lat, v_node.lon,
+                hazard_lat, hazard_lon, hazard_radius_nm
+            )
 
-            if dist_to_hazard_nm <= hazard_radius_nm:
+            if crosses_hazard or dist_to_hazard_nm <= hazard_radius_nm:
                 affected_edges += 1
-                if hazard_type == "storm":
-                    # Storm core: 50% radius is impassable; outer ring has severe wave penalty
-                    if dist_to_hazard_nm <= hazard_radius_nm * 0.5:
-                        edge.is_navigable = False
-                        edge.cost = float("inf")
-                    else:
-                        penalty = 20.0 * hazard_severity * (1.0 - (dist_to_hazard_nm / hazard_radius_nm))
-                        edge.cost = (edge.cost if edge.cost != float("inf") else 1.0) + penalty
-                elif hazard_type == "current":
-                    # Strong counter-current drag
-                    edge.cost = (edge.cost if edge.cost != float("inf") else 1.0) * (3.0 * hazard_severity)
-                elif hazard_type == "restricted":
+                if hazard_type in ("storm", "restricted"):
                     edge.is_navigable = False
                     edge.cost = float("inf")
+                elif hazard_type == "current":
+                    # Strong counter-current drag
+                    edge.cost = (edge.cost if edge.cost != float("inf") else 1.0) * (5.0 * hazard_severity)
 
         # 4. Measure D* Lite execution latency
         t0 = time.perf_counter()
@@ -690,7 +686,7 @@ class RoutePlanningService:
             if node:
                 raw_coords.append((round(node.lat, 4), round(node.lon, 4)))
 
-        # Line of sight smoothing preserving both land safety and storm perimeter clearance
+        # Line of sight smoothing preserving both land safety and strict storm perimeter clearance (105% radius buffer)
         smoothed_coords: List[Tuple[float, float]] = [raw_coords[0]]
         curr_i = 0
         n_pts = len(raw_coords)
@@ -703,7 +699,7 @@ class RoutePlanningService:
                 crosses_hazard = is_segment_crossing_circle(
                     p1[0], p1[1], p2[0], p2[1],
                     hazard_lat, hazard_lon,
-                    hazard_radius_nm * 0.65,
+                    hazard_radius_nm * 1.05,
                 )
                 if not crosses_land and not crosses_hazard:
                     farthest_i = next_i
