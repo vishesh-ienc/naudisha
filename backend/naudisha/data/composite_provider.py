@@ -24,7 +24,11 @@ from naudisha.data.weather_provider import (
     ConditionRequest,
 )
 from naudisha.data.copernicus_provider import CopernicusMarineProvider
-from naudisha.data.wind_provider import OpenMeteoWindProvider
+from naudisha.data.wind_provider import (
+    OpenMeteoWindProvider,
+    _get_climatological_wind,
+    _normalize_utc_datetime,
+)
 
 
 class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
@@ -88,8 +92,9 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
             try:
                 wind_speed, wind_direction = fut_wind.result()
             except Exception as exc:
-                logger.warning("Open-Meteo single wind fetch failed (%s), defaulting to neutral surface wind.", exc)
-                wind_speed, wind_direction = (10.0, 90.0)
+                logger.warning("Open-Meteo single wind fetch failed (%s), defaulting to seasonal monsoon wind model.", exc)
+                dt_utc = _normalize_utc_datetime(timestamp)
+                wind_speed, wind_direction = _get_climatological_wind(lat, lon, dt_utc)
 
         # Fuse into unified EnvironmentalData model
         return EnvironmentalData(
@@ -135,8 +140,11 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
             try:
                 wind_results = fut_wind.result()
             except Exception as exc:
-                logger.warning("Open-Meteo batch wind fetch failed (%s), defaulting to neutral surface wind.", exc)
-                wind_results = {req: (10.0, 90.0) for req in request_list}
+                logger.warning("Open-Meteo batch wind fetch failed (%s), defaulting to seasonal monsoon wind model.", exc)
+                wind_results = {
+                    req: _get_climatological_wind(req.lat, req.lon, _normalize_utc_datetime(req.timestamp))
+                    for req in request_list
+                }
 
         # 3. Assemble combined results
         results: Dict[ConditionRequest, EnvironmentalData] = {}
