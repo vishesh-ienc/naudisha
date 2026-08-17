@@ -1,7 +1,8 @@
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowRight, Compass, LocateFixed, Navigation, Route as RouteIcon, Waves, Wind, Gauge, ShieldCheck } from 'lucide-react'
+import { ArrowRight, LocateFixed, Navigation, Route as RouteIcon, Waves, Wind, Gauge, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
 
 interface FlowCard {
   id: string
@@ -69,33 +70,21 @@ export function LandingPage() {
         {/* Hero Section */}
         <div className="flex flex-col items-center text-center">
           <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
-            className="flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3.5 py-1 text-xs font-semibold text-cyan-400"
-          >
-            <Compass className="h-3.5 w-3.5" />
-            <span>Next-Generation Marine Navigation Platform</span>
-          </motion.div>
-
-          <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.45, delay: 0.1 }}
-            className="mt-6 max-w-3xl"
+            transition={{ duration: 0.45 }}
+            className="flex flex-col items-center"
           >
-            <h1 className="text-balance text-4xl font-extrabold tracking-tight text-foreground sm:text-5xl lg:text-6xl">
-              Navigate smarter. <br />
-              <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-blue-500 bg-clip-text text-transparent">
-                Adapt to the sea.
+            <h1 className="text-5xl font-black tracking-tight sm:text-6xl md:text-7xl lg:text-8xl">
+              <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent drop-shadow-[0_0_35px_rgba(6,182,212,0.35)]">
+                NauDisha
               </span>
             </h1>
-
-            <p className="mx-auto mt-5 max-w-2xl text-pretty text-base text-muted-foreground sm:text-lg">
-              Weather-aware maritime routing and intelligent vessel navigation. NauDisha fuses live oceanographic forecasts
-              with vessel hydrodynamics to optimize safety, fuel, and transit time.
+            <p className="mt-3 text-sm font-medium tracking-widest uppercase text-cyan-400/80 sm:text-base">
+              Dynamic Maritime Route Optimization Platform
             </p>
           </motion.div>
+
 
           {/* Core Capabilities */}
           <motion.div
