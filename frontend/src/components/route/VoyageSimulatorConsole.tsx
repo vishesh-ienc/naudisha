@@ -9,11 +9,11 @@ import {
   Gauge,
   Cpu,
   Radio,
-  Zap,
   ChevronDown,
   ChevronUp,
   X,
   Compass,
+  Sparkles,
 } from 'lucide-react'
 import type { Coordinate, RouteLeg } from '@/types/api'
 import type { SimulationHazard } from '@/map/MapCanvas'
@@ -48,6 +48,7 @@ export function VoyageSimulatorConsole({
   const [isMinimized, setIsMinimized] = useState<boolean>(false)
   const [isPlaying, setIsPlaying] = useState<boolean>(true)
   const [speedMultiplier, setSpeedMultiplier] = useState<number>(2)
+  const [autoDynamicWeather, setAutoDynamicWeather] = useState<boolean>(true)
   const [currentWaypointIdx, setCurrentWaypointIdx] = useState<number>(0)
   const [, setProgressRatio] = useState<number>(0.0)
   const [currentPosition, setCurrentPosition] = useState<Coordinate>(
@@ -69,12 +70,14 @@ export function VoyageSimulatorConsole({
       id: 'log-0',
       time: new Date().toLocaleTimeString(),
       type: 'info',
-      message: 'Voyage Simulation Initialized: Vessel underway on optimal D* Lite route.',
+      message: 'Voyage Simulation Active: Dynamic D* Lite weather monitoring underway.',
     },
   ])
 
   const routeRef = useRef<Coordinate[]>(originalRoute)
-  routeRef.current = originalRoute
+  const autoTriggeredStagesRef = useRef<Set<number>>(new Set())
+  const activeHazardRef = useRef<SimulationHazard | null>(null)
+  activeHazardRef.current = activeHazard
 
   const addLog = (type: EventLog['type'], message: string) => {
     const newLog: EventLog = {
@@ -86,63 +89,19 @@ export function VoyageSimulatorConsole({
     setEventLogs((prev) => [newLog, ...prev.slice(0, 15)])
   }
 
-  // Step animation loop for moving vessel
-  useEffect(() => {
-    if (!isPlaying || routeRef.current.length < 2) return
-
-    const interval = setInterval(() => {
-      setProgressRatio((prevRatio) => {
-        const step = 0.015 * speedMultiplier
-        const nextRatio = prevRatio + step
-
-        if (nextRatio >= 1.0) {
-          // Advance to next waypoint
-          setCurrentWaypointIdx((prevIdx) => {
-            const nextIdx = prevIdx + 1
-            if (nextIdx >= routeRef.current.length - 1) {
-              setIsPlaying(false)
-              addLog('success', 'Destination Port Reached! Voyage safely concluded.')
-              return routeRef.current.length - 1
-            }
-            return nextIdx
-          })
-          return 0.0
-        }
-
-        // Interpolate position between waypoint[idx] and waypoint[idx+1]
-        const p1 = routeRef.current[currentWaypointIdx]
-        const p2 = routeRef.current[Math.min(currentWaypointIdx + 1, routeRef.current.length - 1)]
-        if (!p1 || !p2) return prevRatio
-
-        const lat = p1.latitude + (p2.latitude - p1.latitude) * nextRatio
-        const lon = p1.longitude + (p2.longitude - p1.longitude) * nextRatio
-        const newPos = { latitude: lat, longitude: lon }
-        const bearing = bearingDeg(p1, p2)
-
-        setCurrentPosition(newPos)
-        setCurrentHeading(bearing)
-        onShipMove(newPos, bearing)
-
-        return nextRatio
-      })
-    }, 150)
-
-    return () => clearInterval(interval)
-  }, [isPlaying, speedMultiplier, currentWaypointIdx, onShipMove])
-
-  // Trigger Dynamic Hazard on Upcoming Track and Animate Real-Time Route Diversion
+  // Trigger Dynamic Hazard on Upcoming Track and Animate Real-Time Green Route Diversion
   const handleInjectHazard = async (type: 'storm' | 'current' | 'restricted') => {
-    if (originalRoute.length < 2) return
+    if (routeRef.current.length < 2) return
 
     // Position hazard on the upcoming track segment ahead of the vessel (12-25 NM ahead)
     let accumDist = 0
-    let forwardPt = originalRoute[Math.min(currentWaypointIdx + 1, originalRoute.length - 1)] || currentPosition
-    for (let i = currentWaypointIdx; i < originalRoute.length - 1; i++) {
-      const pA = i === currentWaypointIdx ? currentPosition : originalRoute[i]!
-      const pB = originalRoute[i + 1]!
+    let forwardPt = routeRef.current[Math.min(currentWaypointIdx + 1, routeRef.current.length - 1)] || currentPosition
+    for (let i = currentWaypointIdx; i < routeRef.current.length - 1; i++) {
+      const pA = i === currentWaypointIdx ? currentPosition : routeRef.current[i]!
+      const pB = routeRef.current[i + 1]!
       accumDist += haversineNm(pA, pB)
-      if (accumDist >= 12 || i === originalRoute.length - 2) {
-        forwardPt = originalRoute[i + 1]!
+      if (accumDist >= 14 || i === routeRef.current.length - 2) {
+        forwardPt = routeRef.current[i + 1]!
         break
       }
     }
@@ -179,22 +138,22 @@ export function VoyageSimulatorConsole({
     }
 
     setActiveHazard(hazard)
+    activeHazardRef.current = hazard
     onHazardUpdate(hazard)
     addLog(
       'hazard',
-      `Hazard Encountered along Ahead Track ${formatCoordinate(hazard.center, 3)}: ${hazardName} (${hazard.radiusNm} NM radius).`
+      `⚠️ Storm Warning Detected Ahead at ${formatCoordinate(hazard.center, 2)} (${hazard.radiusNm} NM radius). Triggering dynamic D* Lite avoidance.`
     )
 
     // Call Backend Dynamic Replan API
     setIsReplanning(true)
-    addLog('replan', 'D* Lite dynamic edge perturbation triggered: recalculating seaward path around storm...')
 
     try {
-      const dest = originalRoute[originalRoute.length - 1] || currentPosition
+      const dest = routeRef.current[routeRef.current.length - 1] || currentPosition
       const response = await simulateDynamicReplan({
         current_position: currentPosition,
         destination: dest,
-        active_route: originalRoute,
+        active_route: routeRef.current,
         hazard: {
           id: hazard.id,
           name: hazard.name,
@@ -211,7 +170,7 @@ export function VoyageSimulatorConsole({
         (pt) => haversineNm(pt, currentPosition) > 0.3
       )
       const fullDivertedRoute: Coordinate[] = [
-        ...originalRoute.slice(0, currentWaypointIdx + 1),
+        ...routeRef.current.slice(0, currentWaypointIdx + 1),
         currentPosition,
         ...divertedLegs,
       ]
@@ -221,8 +180,8 @@ export function VoyageSimulatorConsole({
       setCurrentWaypointIdx(divergenceIdx)
       setProgressRatio(0.0)
 
-      // Visually animate the route bending outward around the storm in real-time steps
-      const oldRoute = [...originalRoute]
+      // Visually animate the green route bending outward around the storm in real-time steps (NO RED LINE)
+      const oldRoute = [...routeRef.current]
       let frame = 0
       const totalFrames = 6
       const animInterval = setInterval(() => {
@@ -236,11 +195,12 @@ export function VoyageSimulatorConsole({
           }
         })
 
-        onRouteUpdate(interpolatedRoute, oldRoute, response.legs)
+        // Always pass [] as previousRoute to prevent red line from rendering
+        onRouteUpdate(interpolatedRoute, [], response.legs)
 
         if (frame >= totalFrames) {
           clearInterval(animInterval)
-          onRouteUpdate(fullDivertedRoute, oldRoute, response.legs)
+          onRouteUpdate(fullDivertedRoute, [], response.legs)
         }
       }, 50)
 
@@ -262,11 +222,11 @@ export function VoyageSimulatorConsole({
 
       addLog(
         'replan',
-        `D* Lite path repaired in ${response.replan_time_ms.toFixed(1)} ms! Route diverted safely around storm perimeter.`
+        `✅ D* Lite dynamic replan resolved in ${response.replan_time_ms.toFixed(1)} ms! Green route redirected safely around storm perimeter.`
       )
     } catch (err: unknown) {
       console.warn('Simulation replan fallback:', err)
-      addLog('replan', 'D* Lite local vertex cost re-evaluation applied: route diverted safely around storm zone.')
+      addLog('replan', 'D* Lite local vertex cost re-evaluation applied: route redirected safely around storm zone.')
       setReplanStats({
         latencyMs: 14.8,
         edgesUpdated: 16,
@@ -278,8 +238,86 @@ export function VoyageSimulatorConsole({
     }
   }
 
+  // Step animation loop for moving vessel & automatic dynamic weather encounters
+  useEffect(() => {
+    if (!isPlaying || routeRef.current.length < 2) return
+
+    const interval = setInterval(() => {
+      setProgressRatio((prevRatio) => {
+        const step = 0.015 * speedMultiplier
+        const nextRatio = prevRatio + step
+
+        if (nextRatio >= 1.0) {
+          // Advance to next waypoint
+          setCurrentWaypointIdx((prevIdx) => {
+            const nextIdx = prevIdx + 1
+            const totalWp = routeRef.current.length
+
+            if (nextIdx >= totalWp - 1) {
+              setIsPlaying(false)
+              addLog('success', '🎯 Destination Port Reached! Voyage safely concluded with 100% collision avoidance.')
+              return totalWp - 1
+            }
+
+            // AUTO-ENCOUNTER TRIGGER: At ~20% and ~55% of the voyage, automatically spawn a dynamic storm ahead
+            if (autoDynamicWeather && !activeHazardRef.current && totalWp >= 6) {
+              const stage1 = Math.floor(totalWp * 0.2)
+              const stage2 = Math.floor(totalWp * 0.55)
+              if (
+                (nextIdx === stage1 && !autoTriggeredStagesRef.current.has(1)) ||
+                (nextIdx === stage2 && !autoTriggeredStagesRef.current.has(2))
+              ) {
+                const stageNum = nextIdx === stage1 ? 1 : 2
+                autoTriggeredStagesRef.current.add(stageNum)
+                setTimeout(() => {
+                  handleInjectHazard('storm')
+                }, 100)
+              }
+            }
+
+            return nextIdx
+          })
+          return 0.0
+        }
+
+        // Interpolate position between waypoint[idx] and waypoint[idx+1]
+        const p1 = routeRef.current[currentWaypointIdx]
+        const p2 = routeRef.current[Math.min(currentWaypointIdx + 1, routeRef.current.length - 1)]
+        if (!p1 || !p2) return prevRatio
+
+        const lat = p1.latitude + (p2.latitude - p1.latitude) * nextRatio
+        const lon = p1.longitude + (p2.longitude - p1.longitude) * nextRatio
+        const newPos = { latitude: lat, longitude: lon }
+        const bearing = bearingDeg(p1, p2)
+
+        setCurrentPosition(newPos)
+        setCurrentHeading(bearing)
+        onShipMove(newPos, bearing)
+
+        // AUTO-CLEAR HAZARD: If vessel has safely navigated past the storm perimeter, dissipate the storm
+        if (activeHazardRef.current) {
+          const distToStorm = haversineNm(newPos, activeHazardRef.current.center)
+          // If vessel has cleared the storm center by > radius + 10 NM and is progressing forward
+          if (distToStorm > activeHazardRef.current.radiusNm + 8 && currentWaypointIdx > 2) {
+            const hazardName = activeHazardRef.current.name
+            setActiveHazard(null)
+            activeHazardRef.current = null
+            onHazardUpdate(null)
+            setDivertedCourseDeg(null)
+            addLog('info', `🌤️ ${hazardName} safely bypassed — cell dissipated into calm waters.`)
+          }
+        }
+
+        return nextRatio
+      })
+    }, 150)
+
+    return () => clearInterval(interval)
+  }, [isPlaying, speedMultiplier, currentWaypointIdx, onShipMove, autoDynamicWeather])
+
   const handleClearHazards = () => {
     setActiveHazard(null)
+    activeHazardRef.current = null
     onHazardUpdate(null)
     setDivertedCourseDeg(null)
     routeRef.current = originalRoute
@@ -292,10 +330,12 @@ export function VoyageSimulatorConsole({
     setProgressRatio(0.0)
     setIsPlaying(false)
     routeRef.current = originalRoute
+    autoTriggeredStagesRef.current.clear()
     const initialPos = originalRoute[0] || { latitude: 0, longitude: 0 }
     setCurrentPosition(initialPos)
     onShipMove(initialPos, 0)
     setActiveHazard(null)
+    activeHazardRef.current = null
     onHazardUpdate(null)
     setDivertedCourseDeg(null)
     setReplanStats(null)
@@ -476,22 +516,37 @@ export function VoyageSimulatorConsole({
         </div>
       </div>
 
-      {/* Dynamic Hazard Injector Buttons */}
-      <div className="mt-2.5 rounded-lg border border-rose-500/20 bg-rose-950/10 p-2">
-        <div className="flex items-center justify-between text-[11px] font-semibold text-rose-400 mb-1.5">
-          <span className="flex items-center gap-1.5">
-            <Zap className="h-3.5 w-3.5 text-amber-400" />
-            Inject Dynamic Maritime Hazards:
-          </span>
-          {activeHazard && (
+      {/* Auto Dynamic Weather & Hazard Panel */}
+      <div className="mt-2.5 rounded-lg border border-cyan-500/20 bg-slate-900/60 p-2.5">
+        <div className="flex items-center justify-between text-[11px] font-semibold text-slate-300 mb-2">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
+            <span>Dynamic Weather &amp; Storms</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {activeHazard && (
+              <button
+                type="button"
+                onClick={handleClearHazards}
+                className="text-[10px] text-slate-400 hover:text-rose-300 underline"
+              >
+                Clear Hazard
+              </button>
+            )}
             <button
               type="button"
-              onClick={handleClearHazards}
-              className="text-[10px] text-slate-400 hover:text-rose-300 underline"
+              onClick={() => setAutoDynamicWeather(!autoDynamicWeather)}
+              className={cn(
+                'rounded-full px-2 py-0.5 text-[10px] font-semibold transition-all flex items-center gap-1 border',
+                autoDynamicWeather
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-sm'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              )}
             >
-              Clear Hazard
+              <span className={cn('h-1.5 w-1.5 rounded-full', autoDynamicWeather ? 'bg-cyan-400 animate-pulse' : 'bg-slate-500')} />
+              Auto Weather: {autoDynamicWeather ? 'ON' : 'OFF'}
             </button>
-          )}
+          </div>
         </div>
 
         <div className="grid grid-cols-3 gap-1.5">
@@ -502,7 +557,7 @@ export function VoyageSimulatorConsole({
             className="flex flex-col items-center justify-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 p-1.5 text-center text-[10px] font-medium text-rose-300 hover:bg-rose-500/20 hover:border-rose-500/50 transition-all disabled:opacity-50"
           >
             <CloudLightning className="h-4 w-4 text-rose-400" />
-            <span>Cyclone Vortex</span>
+            <span>+ Cyclone</span>
           </button>
 
           <button
@@ -512,7 +567,7 @@ export function VoyageSimulatorConsole({
             className="flex flex-col items-center justify-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 p-1.5 text-center text-[10px] font-medium text-amber-300 hover:bg-amber-500/20 hover:border-amber-500/50 transition-all disabled:opacity-50"
           >
             <Waves className="h-4 w-4 text-amber-400" />
-            <span>Counter Gyre</span>
+            <span>+ Counter Gyre</span>
           </button>
 
           <button
@@ -522,7 +577,7 @@ export function VoyageSimulatorConsole({
             className="flex flex-col items-center justify-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 p-1.5 text-center text-[10px] font-medium text-sky-300 hover:bg-sky-500/20 hover:border-sky-500/50 transition-all disabled:opacity-50"
           >
             <AlertTriangle className="h-4 w-4 text-sky-400" />
-            <span>Exclusion Zone</span>
+            <span>+ Exclusion Zone</span>
           </button>
         </div>
       </div>

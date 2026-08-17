@@ -381,30 +381,7 @@ export function MapCanvas({
           </>
         )}
 
-        {/* 1. ORIGINAL BLOCKED COURSE (RED DASHED LINE SHOWING HAZARD INTERSECTION) */}
-        {previousPositions.length > 0 && (
-          <>
-            <Polyline
-              positions={previousPositions}
-              pathOptions={{
-                color: '#ef4444',
-                weight: 3.5,
-                opacity: 0.85,
-                dashArray: '6, 8',
-                lineCap: 'round',
-              }}
-            >
-              <Popup className="naudisha-popup">
-                <div className="p-1.5 font-sans text-xs">
-                  <div className="font-bold text-rose-400">🚫 Original Course (Blocked by Storm)</div>
-                  <p className="mt-1 text-muted-foreground">
-                    This baseline trajectory directly intersects the active cyclone core (Hs &gt; 5.0m). D* Lite has dynamically diverted the vessel.
-                  </p>
-                </div>
-              </Popup>
-            </Polyline>
-          </>
-        )}
+
 
         {/* 2. DYNAMICALLY RE-PLANNED OPTIMAL ROUTE — RENDERED IN VIBRANT GREEN */}
         {smoothedOptimalPositions.length > 0 && (
