@@ -4,7 +4,6 @@ import { ThemeProvider } from '@/hooks/useTheme'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LandingPage } from '@/pages/LandingPage'
 import { PlanVoyagePage } from '@/pages/PlanVoyagePage'
-import { TrackShipPage } from '@/pages/TrackShipPage'
 import { LiveRoutePage } from '@/pages/LiveRoutePage'
 
 const queryClient = new QueryClient({
@@ -26,8 +25,8 @@ export default function App() {
             <Route element={<AppLayout />}>
               <Route index element={<LandingPage />} />
               <Route path="/plan" element={<PlanVoyagePage />} />
-              <Route path="/track" element={<TrackShipPage />} />
               <Route path="/live-route" element={<LiveRoutePage />} />
+              <Route path="/track" element={<Navigate to="/live-route" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
@@ -36,3 +35,4 @@ export default function App() {
     </QueryClientProvider>
   )
 }
+

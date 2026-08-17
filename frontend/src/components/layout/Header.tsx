@@ -6,7 +6,6 @@ import { BackendStatusPill } from './BackendStatusPill'
 
 const NAV_ITEMS = [
   { to: '/plan', label: 'Plan Voyage', icon: RouteIcon },
-  { to: '/track', label: 'Track Ship', icon: Navigation },
   { to: '/live-route', label: 'Live Routing', icon: LocateFixed },
 ]
 

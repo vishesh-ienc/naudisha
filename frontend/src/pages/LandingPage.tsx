@@ -1,15 +1,14 @@
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowRight, LocateFixed, Navigation, Route as RouteIcon, Waves, Wind, Gauge, ShieldCheck } from 'lucide-react'
+import { ArrowRight, LocateFixed, Route as RouteIcon, Waves, Wind, Gauge, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
-
 
 interface FlowCard {
   id: string
   title: string
   tagline: string
   description: string
-  icon: typeof Navigation
+  icon: typeof RouteIcon
   to: string
   badge: string
 }
@@ -19,28 +18,19 @@ const FLOWS: FlowCard[] = [
     id: 'plan',
     title: 'Plan a Voyage',
     tagline: 'Pre-departure optimal routing',
-    description: 'Calculate least-cost routes considering Copernicus ocean currents, wave resistance and atmospheric winds.',
+    description: 'Calculate least-cost routes between any global ports considering Copernicus ocean currents, wave resistance and atmospheric winds.',
     icon: RouteIcon,
     to: '/plan',
     badge: 'Flow 1',
   },
   {
-    id: 'track',
-    title: 'Track a Ship',
-    tagline: 'Live transponder & navigation',
-    description: 'Monitor active vessel positions, course headings, speed over ground and dynamic route progress over WebSocket.',
-    icon: Navigation,
-    to: '/track',
-    badge: 'Flow 2',
-  },
-  {
     id: 'live-route',
     title: 'Live Routing',
     tagline: 'Current fix to destination',
-    description: 'Calculate a weather-optimized passage directly from the vessel’s current coordinates to any target port.',
+    description: 'Calculate a weather-optimized passage directly from a vessel’s current live AIS coordinates to any target destination.',
     icon: LocateFixed,
     to: '/live-route',
-    badge: 'Flow 3',
+    badge: 'Flow 2',
   },
 ]
 
@@ -85,7 +75,6 @@ export function LandingPage() {
             </p>
           </motion.div>
 
-
           {/* Core Capabilities */}
           <motion.div
             initial={{ opacity: 0 }}
@@ -103,8 +92,9 @@ export function LandingPage() {
           </motion.div>
         </div>
 
-        {/* 3 Core Product Flows */}
-        <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        {/* 2 Core Product Flows */}
+        <div className="mx-auto mt-14 grid max-w-4xl gap-6 sm:grid-cols-2">
+
           {FLOWS.map((flow, index) => (
             <motion.button
               key={flow.id}
