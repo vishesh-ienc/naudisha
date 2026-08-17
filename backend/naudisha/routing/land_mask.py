@@ -187,23 +187,46 @@ _ARABIAN_PENINSULA = [
 
 # Iran, Pakistan Makran Coast, and Persian Gulf North
 _IRAN_MAKRAN_COAST = [
-    # Pakistan Makran Coast
+    # Pakistan Makran Coast (High-Precision Headlands & Tombolos)
     [24.83, 66.65],   # Karachi West / Cape Monze
-    [25.10, 66.50],   # Sonmiani Bay / Gadani
-    [25.35, 65.50],   # Hingol Coast
-    [25.20, 64.60],   # Ormara Promontory
-    [25.25, 63.45],   # Pasni Harbor
-    [25.12, 62.32],   # Gwadar Headland
-    [25.05, 61.75],   # Jiwani / Pakistan-Iran Border
+    [25.10, 66.70],   # Sonmiani Bay East / Gadani
+    [25.38, 66.55],   # Sonmiani Bay Apex
+    [25.35, 65.50],   # Hingol National Park Coast
+    [25.30, 65.20],   # Ras Malan Promontory
+    [25.23, 64.72],   # Ormara Bay East approach
+    [25.20, 64.65],   # Ormara East Bay (Demijarr)
+    [25.17, 64.64],   # Ras Ormara East Cliff
+    [25.12, 64.58],   # Ras Ormara Hammerhead South Tip (Key Land Obstruction)
+    [25.15, 64.52],   # Ras Ormara West Corner
+    [25.22, 64.48],   # Ormara West Bay (Paddi Zirr)
+    [25.40, 64.08],   # Kalmat Khor Inner Estuary
+    [25.30, 63.85],   # Ras Basol Coast
+    [25.26, 63.60],   # Pasni Bay East Approach
+    [25.18, 63.52],   # Ras Jaddi East Promontory
+    [25.16, 63.47],   # Ras Jaddi South Promontory (Key Headland Obstruction)
+    [25.20, 63.42],   # Pasni Town / Port Basin
+    [25.23, 63.35],   # Pasni West Headland
+    [25.20, 63.05],   # Ras Shamal Bandar
+    [25.16, 62.38],   # Gwadar East Bay (Demi Zirr)
+    [25.12, 62.35],   # Koh-e-Batil East Cliff
+    [25.08, 62.32],   # Gwadar Koh-e-Batil / Ras Nuh South Tip
+    [25.11, 62.28],   # Koh-e-Batil West Cliff
+    [25.16, 62.25],   # Gwadar West Bay (Paddi Zirr)
+    [25.18, 62.05],   # Pishukan Headland
+    [25.08, 61.85],   # Ganz Promontory
+    [25.02, 61.75],   # Ras Jiwani South Tip (Pakistan-Iran Border)
     
     # Iran Makran Coast & Gulf of Oman North
-    [25.15, 61.50],   # Gwatar Bay
-    [25.30, 60.60],   # Chabahar Port
-    [25.35, 60.40],   # Konarak
-    [25.38, 59.80],   # Pozm
-    [25.40, 59.30],   # Tang / Galag
+    [25.12, 61.50],   # Gwatar Bay / Baho River mouth
+    [25.28, 60.65],   # Chabahar Bay East
+    [25.24, 60.58],   # Chabahar Ras Tis Promontory / Port
+    [25.35, 60.40],   # Konarak Navy Basin
+    [25.36, 60.20],   # Pozm Bay Apex
+    [25.30, 60.15],   # Ras Pozm Headland
+    [25.33, 59.88],   # Ras Tang Promontory
+    [25.40, 59.35],   # Galag Coast
     [25.55, 58.50],   # Sadij
-    [25.65, 57.77],   # Jask Promontory (Cape Jask)
+    [25.62, 57.75],   # Cape Jask South Promontory (Gulf of Oman entrance)
     [25.85, 57.30],   # Kohmobarak
     [26.50, 57.08],   # Sirik
     [27.00, 56.90],   # Minab / Hormozgan

@@ -13,11 +13,11 @@ import { HttpError } from '@/services/http'
 import { telemetry } from '@/services/telemetry'
 import type { RoutePreviewRequest, RoutePreviewResponse } from '@/types/api'
 
-const POLL_INTERVAL_MS = 2500
+const POLL_INTERVAL_MS = 350
 /** Give up well past the observed worst case rather than mid-plan. */
-const MAX_WAIT_MS = 240_000
-/** Observed cold-plan duration, used only to render a progress estimate. */
-const TYPICAL_PLAN_SECONDS = 80
+const MAX_WAIT_MS = 60_000
+/** Typical optimized plan duration, used only to render a progress estimate. */
+const TYPICAL_PLAN_SECONDS = 6
 
 export type PlanPhase = 'idle' | 'submitting' | 'planning' | 'ready' | 'failed'
 
