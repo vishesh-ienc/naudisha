@@ -242,13 +242,29 @@ export function PlanVoyagePage() {
                     'w-full font-semibold border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/20 shadow-md transition-all',
                     isSimulationActive ? 'bg-cyan-500/20 ring-2 ring-cyan-400' : 'bg-slate-900/60'
                   )}
-                  onClick={() => {
-                    if (!route?.route || route.route.length === 0) {
-                      // Set Mumbai to Dubai demo coordinates if none selected
-                      if (!originCoord) setOriginCoord({ latitude: 18.95, longitude: 72.82 })
-                      if (!destCoord) setDestCoord({ latitude: 25.26, longitude: 55.28 })
+                  onClick={async () => {
+                    if (isSimulationActive) {
+                      setIsSimulationActive(false)
+                      return
                     }
-                    setIsSimulationActive(!isSimulationActive)
+
+                    const orig = originCoord || { latitude: 18.95, longitude: 72.82 }
+                    const dest = destCoord || { latitude: 25.26, longitude: 55.28 }
+                    if (!originCoord) setOriginCoord(orig)
+                    if (!destCoord) setDestCoord(dest)
+
+                    if (!route?.route || route.route.length === 0) {
+                      const shipParticulars = vesselToParticulars(selectedVessel)
+                      await plan({
+                        imo_number: null,
+                        start: orig,
+                        destination: dest,
+                        departure_time: new Date(departure).toISOString(),
+                        ship: shipParticulars,
+                        optimization_objective: objective,
+                      })
+                    }
+                    setIsSimulationActive(true)
                   }}
                 >
                   <span className="flex items-center justify-center gap-2">

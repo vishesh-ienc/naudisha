@@ -134,12 +134,21 @@ export function VoyageSimulatorConsole({
   const handleInjectHazard = async (type: 'storm' | 'current' | 'restricted') => {
     if (originalRoute.length < 2) return
 
-    // Position hazard ahead along the active route
-    const remainingWps = originalRoute.slice(currentWaypointIdx)
-    const midPoint =
-      remainingWps.length > 2
-        ? remainingWps[Math.floor(remainingWps.length / 2)]
-        : remainingWps[remainingWps.length - 1] || currentPosition
+    // Position hazard ahead in open sea (never right on the destination port or origin)
+    let hazardCenter: Coordinate
+    if (originalRoute.length > 5) {
+      const forwardIdx = Math.min(
+        originalRoute.length - 2,
+        currentWaypointIdx + Math.max(1, Math.floor((originalRoute.length - currentWaypointIdx) * 0.35))
+      )
+      hazardCenter = originalRoute[forwardIdx] || currentPosition
+    } else {
+      const dest = originalRoute[originalRoute.length - 1] || currentPosition
+      hazardCenter = {
+        latitude: (currentPosition.latitude + dest.latitude) / 2,
+        longitude: (currentPosition.longitude + dest.longitude) / 2,
+      }
+    }
 
     const hazardName =
       type === 'storm'
@@ -159,8 +168,8 @@ export function VoyageSimulatorConsole({
       id: `hazard-${Date.now()}`,
       name: hazardName,
       type,
-      center: midPoint || currentPosition,
-      radiusNm: type === 'storm' ? 55 : 40,
+      center: hazardCenter,
+      radiusNm: type === 'storm' ? 35 : 25,
       severity: 1.2,
       description: hazardDesc,
     }
