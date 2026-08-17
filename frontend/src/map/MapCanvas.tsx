@@ -6,7 +6,7 @@
  * and animated environmental wind/current vector layers.
  */
 
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
   MapContainer,
   TileLayer,
@@ -193,12 +193,11 @@ export function MapCanvas({
     return previousRoute.map((p) => [p.latitude, p.longitude])
   }, [previousRoute])
 
-  // Calculate auto-fit bounds
+  // Calculate auto-fit bounds for the voyage corridor (independent of continuous ship movement ticks)
   const fitBounds: LatLngBoundsExpression | null = useMemo(() => {
     const points: Coordinate[] = []
     if (start) points.push(start)
     if (destination) points.push(destination)
-    if (shipPosition) points.push(shipPosition)
     if (route && route.length > 0) points.push(...route)
 
     if (points.length >= 2) {
@@ -218,7 +217,7 @@ export function MapCanvas({
       ]
     }
     return null
-  }, [start, destination, shipPosition, route])
+  }, [start, destination, route])
 
   return (
     <div className={cn('relative h-full w-full overflow-hidden rounded-2xl border border-[var(--border)] shadow-2xl', className)}>
@@ -617,7 +616,7 @@ export function MapCanvas({
   )
 }
 
-/** Helper component to fit map bounds on route or single vessel position change */
+/** Helper component to fit map bounds on route or origin/destination selection without interrupting user zoom/pan */
 function MapBoundsController({
   bounds,
   singlePoint,
@@ -626,21 +625,46 @@ function MapBoundsController({
   singlePoint?: Coordinate | null
 }) {
   const map = useMap()
+  const lastBoundsKeyRef = useRef<string>('')
+  const userInteractedRef = useRef<boolean>(false)
+
+  // Track if user is actively zooming or dragging the map
   useEffect(() => {
-    if (bounds) {
-      map.fitBounds(bounds, {
-        padding: [45, 45],
-        maxZoom: 13,
-        animate: true,
-        duration: 0.8,
-      })
-    } else if (singlePoint) {
-      map.flyTo([singlePoint.latitude, singlePoint.longitude], 8, {
-        animate: true,
-        duration: 0.8,
-      })
+    const handleUserInteraction = () => {
+      userInteractedRef.current = true
     }
-  }, [bounds, singlePoint, map])
+    map.on('zoomstart', handleUserInteraction)
+    map.on('dragstart', handleUserInteraction)
+    return () => {
+      map.off('zoomstart', handleUserInteraction)
+      map.off('dragstart', handleUserInteraction)
+    }
+  }, [map])
+
+  const boundsKey = bounds ? JSON.stringify(bounds) : (singlePoint ? `${singlePoint.latitude.toFixed(2)},${singlePoint.longitude.toFixed(2)}` : '')
+
+  useEffect(() => {
+    if (!boundsKey) return
+    // Only auto-fit when the passage definition changes, and never fight user zooming
+    if (lastBoundsKeyRef.current !== boundsKey) {
+      lastBoundsKeyRef.current = boundsKey
+      userInteractedRef.current = false
+      if (bounds) {
+        map.fitBounds(bounds, {
+          padding: [45, 45],
+          maxZoom: 13,
+          animate: true,
+          duration: 0.8,
+        })
+      } else if (singlePoint) {
+        map.flyTo([singlePoint.latitude, singlePoint.longitude], 8, {
+          animate: true,
+          duration: 0.8,
+        })
+      }
+    }
+  }, [bounds, singlePoint, boundsKey, map])
+
   return null
 }
 
