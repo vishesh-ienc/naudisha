@@ -14,6 +14,7 @@ import {
   Circle,
   Marker,
   Popup,
+  Tooltip,
   useMap,
   LayersControl,
 } from 'react-leaflet'
@@ -277,6 +278,14 @@ export function MapCanvas({
               position={[loc.coordinate.latitude, loc.coordinate.longitude]}
               icon={portDotIcon(loc.kind === 'port')}
             >
+              <Tooltip direction="top" offset={[0, -8]} opacity={0.96} className="naudisha-tooltip">
+                <div>
+                  <div className="font-bold text-sky-400">⚓ {loc.name}</div>
+                  <div className="text-[10px] text-slate-300">
+                    {loc.country} {loc.unLocode ? `(${loc.unLocode})` : ''} · Click to set origin/destination
+                  </div>
+                </div>
+              </Tooltip>
               <Popup className="naudisha-popup">
                 <div className="p-2 font-sans text-xs min-w-[210px]">
                   <div className="font-bold text-sky-400 text-[12px]">{loc.name}</div>
@@ -346,6 +355,14 @@ export function MapCanvas({
                   : counterCurrentIcon()
               }
             >
+              <Tooltip direction="top" offset={[0, -20]} opacity={0.96} className="naudisha-tooltip">
+                <div>
+                  <div className="font-bold text-rose-400">⚡ {simulationHazard.name}</div>
+                  <div className="text-[10px] text-slate-200">
+                    Radius: {simulationHazard.radiusNm} NM · D* Lite dynamic avoidance active
+                  </div>
+                </div>
+              </Tooltip>
               <Popup className="naudisha-popup">
                 <div className="p-2 font-sans text-xs min-w-[220px]">
                   <div className="font-bold text-rose-400 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
@@ -433,6 +450,9 @@ export function MapCanvas({
         {/* Start Point Marker */}
         {start && (
           <Marker position={[start.latitude, start.longitude]} icon={startIcon}>
+            <Tooltip direction="top" offset={[0, -18]} opacity={0.96} className="naudisha-tooltip">
+              <div className="font-bold text-emerald-400">📍 Voyage Origin: {formatCoordinate(start, 2)}</div>
+            </Tooltip>
             <Popup className="naudisha-popup">
               <div className="p-1.5 font-sans text-xs">
                 <div className="font-bold text-emerald-400 uppercase tracking-wider text-[10px]">Voyage Origin</div>
@@ -445,6 +465,9 @@ export function MapCanvas({
         {/* Destination Point Marker */}
         {destination && (
           <Marker position={[destination.latitude, destination.longitude]} icon={destinationIcon}>
+            <Tooltip direction="top" offset={[0, -18]} opacity={0.96} className="naudisha-tooltip">
+              <div className="font-bold text-rose-400">🎯 Destination Port: {formatCoordinate(destination, 2)}</div>
+            </Tooltip>
             <Popup className="naudisha-popup">
               <div className="p-1.5 font-sans text-xs">
                 <div className="font-bold text-rose-400 uppercase tracking-wider text-[10px]">Destination Port</div>
@@ -457,6 +480,12 @@ export function MapCanvas({
         {/* Route Waypoint Nodes */}
         {route && route.length > 2 && route.slice(1, -1).map((pt, i) => (
           <Marker key={`wp-${i}`} position={[pt.latitude, pt.longitude]} icon={waypointIcon}>
+            <Tooltip direction="top" offset={[0, -8]} opacity={0.96} className="naudisha-tooltip">
+              <div>
+                <span className="font-bold text-emerald-400">🟢 Waypoint {i + 1}</span>
+                <span className="font-mono text-[10px] text-slate-300 ml-1.5">{formatCoordinate(pt, 2)}</span>
+              </div>
+            </Tooltip>
             <Popup className="naudisha-popup">
               <div className="p-1.5 font-sans text-xs">
                 <div className="font-bold text-emerald-400 text-[10px]">Waypoint {i + 1}</div>
@@ -473,6 +502,15 @@ export function MapCanvas({
             position={[vec.position.latitude, vec.position.longitude]}
             icon={windVectorIcon(vec.direction, vec.speed)}
           >
+            <Tooltip direction="top" offset={[0, -14]} opacity={0.96} className="naudisha-tooltip">
+              <div className="space-y-0.5">
+                <div className="font-bold text-sky-400">💨 Atmospheric Wind · Leg {vec.legIndex}</div>
+                <div className="text-[10px] text-slate-200">
+                  Speed: <strong className="text-white">{Math.round(vec.speed)} kn</strong> · Direction: <strong className="text-white">{Math.round(vec.direction)}°</strong>
+                </div>
+                <div className="text-[9px] text-slate-400 pt-0.5 border-t border-slate-700">Source: Open-Meteo High-Res API</div>
+              </div>
+            </Tooltip>
             <Popup className="naudisha-popup">
               <div className="p-1.5 font-sans text-xs">
                 <div className="font-bold text-sky-400 uppercase tracking-wider text-[10px]">
@@ -495,6 +533,22 @@ export function MapCanvas({
             position={[vec.position.latitude, vec.position.longitude]}
             icon={currentVectorIcon(vec.direction, vec.speed, vec.isAssist)}
           >
+            <Tooltip direction="top" offset={[0, -14]} opacity={0.96} className="naudisha-tooltip">
+              <div className="space-y-0.5">
+                <div className={cn('font-bold', vec.isAssist ? 'text-emerald-400' : 'text-amber-400')}>
+                  🌊 Ocean Surface Current · Leg {vec.legIndex}
+                </div>
+                <div className="text-[10px] text-slate-200">
+                  Velocity: <strong className="text-white">{vec.speed.toFixed(1)} kn</strong> · Direction: <strong className="text-white">{Math.round(vec.direction)}°</strong>
+                </div>
+                <div className="text-[10px]">
+                  Impact: <span className={cn('font-bold', vec.alongTrack >= 0 ? 'text-emerald-400' : 'text-amber-400')}>
+                    {vec.alongTrack >= 0 ? `+${vec.alongTrack.toFixed(2)} kn Push (Assisting)` : `${vec.alongTrack.toFixed(2)} kn Drag (Opposing)`}
+                  </span>
+                </div>
+                <div className="text-[9px] text-slate-400 pt-0.5 border-t border-slate-700">Source: Copernicus Marine Model</div>
+              </div>
+            </Tooltip>
             <Popup className="naudisha-popup">
               <div className="p-1.5 font-sans text-xs">
                 <div className={cn('font-bold uppercase tracking-wider text-[10px]', vec.isAssist ? 'text-emerald-400' : 'text-amber-400')}>
@@ -522,6 +576,14 @@ export function MapCanvas({
             icon={shipIcon(shipHeading, positionSource === 'simulated' || shipSimulated)}
             zIndexOffset={1000}
           >
+            <Tooltip direction="top" offset={[0, -20]} opacity={0.96} className="naudisha-tooltip">
+              <div>
+                <div className="font-bold text-cyan-400">🚢 {shipName ?? 'Live Vessel'}</div>
+                <div className="text-[10px] text-slate-200">
+                  Fix: {formatCoordinate(shipPosition, 2)} · Heading: <strong>{Math.round(shipHeading)}°</strong>
+                </div>
+              </div>
+            </Tooltip>
             <Popup className="naudisha-popup">
               <div className="p-1.5 font-sans text-xs">
                 <div className="flex items-center justify-between gap-2">
