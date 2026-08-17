@@ -63,7 +63,9 @@ _INDIA_MAINLAND_COAST = [
     [10.20, 76.15],   # Kodungallur
     [9.96,  76.24],   # Kochi / Willingdon Island
     [9.50,  76.32],   # Alappuzha (Alleppey)
+    [9.18,  76.50],   # Kayamkulam / Karunagappalli
     [8.88,  76.60],   # Kollam / Neendakara
+    [8.70,  76.72],   # Varkala / Attingal
     [8.48,  76.94],   # Thiruvananthapuram / Vizhinjam
     [8.08,  77.55],   # Kanyakumari / Cape Comorin (Southernmost tip)
 
@@ -299,6 +301,19 @@ _POLYGONS = [
     Path(np.array(_MALAY_INDOCHINA)),
     Path(np.array(_PALK_STRAIT_SHALLOWS)),
 ]
+
+
+def are_points_on_land(pts: np.ndarray) -> np.ndarray:
+    """
+    Vectorized batch check for an (N, 2) array of [lat, lon] coordinates.
+    Returns a boolean 1D numpy array of length N (True if on land, False if in water).
+    """
+    if len(pts) == 0:
+        return np.empty(0, dtype=bool)
+    res = np.zeros(len(pts), dtype=bool)
+    for poly_path in _POLYGONS:
+        res |= poly_path.contains_points(pts)
+    return res
 
 
 def is_point_on_land(lat: float, lon: float) -> bool:

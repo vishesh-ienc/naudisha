@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -39,6 +40,7 @@ from naudisha.routing.graph import (
 )
 from naudisha.routing.land_mask import (
     is_point_on_land,
+    are_points_on_land,
     is_segment_crossing_land,
     is_cross_peninsular_voyage,
 )
@@ -198,9 +200,6 @@ def _weights_to_dict(w: CostWeights) -> Dict[str, float]:
         "safety": w.safety,
     }
 
-
-import threading
-import time
 
 class RoutePlanningService:
     """
@@ -443,12 +442,14 @@ class RoutePlanningService:
                 raw_coords.append((float(node.lat), float(node.lon)))
         raw_coords.append((float(dest_lat), float(dest_lon)))
 
-        # 6a. Nautical Line-of-Sight Path Smoothing
+        # 6a. Nautical Line-of-Sight Path Smoothing with Lookahead Window
         smoothed_coords: List[Tuple[float, float]] = [raw_coords[0]]
         curr_i = 0
-        while curr_i < len(raw_coords) - 1:
+        n_raw = len(raw_coords)
+        while curr_i < n_raw - 1:
             farthest_i = curr_i + 1
-            for next_i in range(len(raw_coords) - 1, curr_i, -1):
+            max_lookahead = min(n_raw - 1, curr_i + 16)
+            for next_i in range(max_lookahead, curr_i, -1):
                 p1 = raw_coords[curr_i]
                 p2 = raw_coords[next_i]
                 if not is_segment_crossing_land(p1[0], p1[1], p2[0], p2[1], sample_spacing_nm=1.0):
@@ -469,8 +470,7 @@ class RoutePlanningService:
                 lats = np.linspace(p1[0], p2[0], steps + 1)[1:]
                 lons = np.linspace(p1[1], p2[1], steps + 1)[1:]
                 for lat, lon in zip(lats, lons):
-                    if not is_point_on_land(float(lat), float(lon)):
-                        dense_track.append((float(lat), float(lon)))
+                    dense_track.append((float(lat), float(lon)))
             else:
                 dense_track.append(p2)
 
@@ -501,15 +501,30 @@ class RoutePlanningService:
         total_hours = 0.0
         total_cost_acc = 0.0
 
-        # Retrieve environmental conditions for each leg from the already-populated graph edges
+        # Retrieve environmental conditions for each leg from the nearest graph edge
         def _get_graph_env(mlat: float, mlon: float) -> EnvironmentalData:
-            nearest_id = self._find_nearest_node_id(graph, mlat, mlon)
-            if nearest_id:
-                for tgt_id in graph._outgoing.get(nearest_id, set()):
-                    edge = graph.get_edge(nearest_id, tgt_id)
+            best_id: Optional[str] = None
+            best_dist = float("inf")
+            for node in graph.get_all_nodes():
+                dist = (node.lat - mlat) ** 2 + (node.lon - mlon) ** 2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_id = node.node_id
+            if best_id:
+                for tgt_id in graph._outgoing.get(best_id, set()):
+                    edge = graph.get_edge(best_id, tgt_id)
                     if edge and edge.env_data:
                         return edge.env_data
-            return EnvironmentalData(timestamp=dep_iso)
+            return EnvironmentalData(
+                timestamp=dep_iso,
+                current_speed=0.2,
+                current_direction=90.0,
+                wave_height=1.0,
+                wave_direction=90.0,
+                wave_period=6.0,
+                wind_speed=10.0,
+                wind_direction=90.0,
+            )
 
         for i in range(len(dense_track) - 1):
             p1 = dense_track[i]
@@ -661,6 +676,7 @@ class RoutePlanningService:
         if not reachable or len(path) < 2:
             # Safe seaward fallback: standard route without blocking
             base_res = self.plan_preview_route(
+                imo_number=None,
                 start_lat=current_lat,
                 start_lon=current_lon,
                 dest_lat=dest_lat,
@@ -693,7 +709,8 @@ class RoutePlanningService:
         n_pts = len(raw_coords)
         while curr_i < n_pts - 1:
             farthest_i = curr_i + 1
-            for next_i in range(n_pts - 1, curr_i, -1):
+            max_lookahead = min(n_pts - 1, curr_i + 16)
+            for next_i in range(max_lookahead, curr_i, -1):
                 p1 = raw_coords[curr_i]
                 p2 = raw_coords[next_i]
                 crosses_land = is_segment_crossing_land(p1[0], p1[1], p2[0], p2[1], sample_spacing_nm=1.0)
@@ -735,13 +752,28 @@ class RoutePlanningService:
         total_cost_acc = 0.0
 
         def _get_env_at(mlat: float, mlon: float) -> EnvironmentalData:
-            nearest_id = self._find_nearest_node_id(grid, mlat, mlon)
-            if nearest_id:
-                for tgt_id in grid._outgoing.get(nearest_id, set()):
-                    edge = grid.get_edge(nearest_id, tgt_id)
+            best_id: Optional[str] = None
+            best_dist = float("inf")
+            for node in grid.get_all_nodes():
+                dist = (node.lat - mlat) ** 2 + (node.lon - mlon) ** 2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_id = node.node_id
+            if best_id:
+                for tgt_id in grid._outgoing.get(best_id, set()):
+                    edge = grid.get_edge(best_id, tgt_id)
                     if edge and edge.env_data:
                         return edge.env_data
-            return EnvironmentalData(timestamp=dep_iso)
+            return EnvironmentalData(
+                timestamp=dep_iso,
+                current_speed=0.2,
+                current_direction=90.0,
+                wave_height=1.0,
+                wave_direction=90.0,
+                wave_period=6.0,
+                wind_speed=10.0,
+                wind_direction=90.0,
+            )
 
         for i in range(len(dense_track) - 1):
             p1 = dense_track[i]
@@ -891,24 +923,45 @@ class RoutePlanningService:
             connectivity=8,
         )
 
-        # Apply Land Masking: mark all land nodes as non-navigable
-        for node in graph.get_all_nodes():
-            if is_point_on_land(node.lat, node.lon):
+        # Apply Vectorized Land Masking: mark all land nodes as non-navigable
+        all_nodes = graph.get_all_nodes()
+        coords = np.array([[n.lat, n.lon] for n in all_nodes])
+        land_mask = are_points_on_land(coords)
+        for node, on_land in zip(all_nodes, land_mask):
+            if on_land:
                 node.is_navigable = False
 
-        # Invalidate all edges connecting to land nodes or crossing landmasses
+        # Invalidate all edges connecting to land nodes
+        valid_edges = []
         for (src, tgt), edge in graph._edges.items():
             src_node = graph.get_node(src)
             tgt_node = graph.get_node(tgt)
-            if (
-                not src_node
-                or not tgt_node
-                or not src_node.is_navigable
-                or not tgt_node.is_navigable
-                or is_segment_crossing_land(src_node.lat, src_node.lon, tgt_node.lat, tgt_node.lon)
-            ):
+            if not src_node or not tgt_node or not src_node.is_navigable or not tgt_node.is_navigable:
                 edge.is_navigable = False
                 edge.cost = math.inf
+            else:
+                valid_edges.append((edge, src_node, tgt_node))
+
+        # Distance-adaptive vectorized check for remaining sea-to-sea candidate edges
+        if valid_edges:
+            edge_sample_ranges = []
+            all_sample_pts = []
+            for edge, s_node, t_node in valid_edges:
+                d_nm = calculate_haversine_distance(s_node.lat, s_node.lon, t_node.lat, t_node.lon)
+                num_samples = max(8, int(d_nm / 2.0))
+                start_idx = len(all_sample_pts)
+                for a in np.linspace(0.02, 0.98, num_samples):
+                    all_sample_pts.append((s_node.lat * (1.0 - a) + t_node.lat * a, s_node.lon * (1.0 - a) + t_node.lon * a))
+                end_idx = len(all_sample_pts)
+                edge_sample_ranges.append((edge, start_idx, end_idx))
+
+            flat_samples = np.array(all_sample_pts)
+            land_flags = are_points_on_land(flat_samples)
+
+            for edge, s_idx, e_idx in edge_sample_ranges:
+                if np.any(land_flags[s_idx:e_idx]):
+                    edge.is_navigable = False
+                    edge.cost = math.inf
 
         return graph
 
@@ -919,31 +972,24 @@ class RoutePlanningService:
         lon: float,
     ) -> Optional[str]:
         """Finds the ID of the nearest navigable node in the graph with unobstructed line-of-sight."""
-        best_id: Optional[str] = None
-        best_dist = float("inf")
-
-        # 1. Prefer nodes with direct line-of-sight (does not cross land)
+        candidates = []
         for node in graph.get_all_nodes():
-            if not node.is_navigable:
-                continue
-            if is_segment_crossing_land(lat, lon, node.lat, node.lon, sample_spacing_nm=1.0):
-                continue
-            dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
-            if dist < best_dist:
-                best_dist = dist
-                best_id = node.node_id
+            if node.is_navigable:
+                dist = (node.lat - lat) ** 2 + (node.lon - lon) ** 2
+                candidates.append((dist, node))
 
-        # 2. Fallback if harbor is deeply enclosed: nearest navigable node
-        if best_id is None:
-            for node in graph.get_all_nodes():
-                if not node.is_navigable:
-                    continue
-                dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_id = node.node_id
+        if not candidates:
+            return None
 
-        return best_id
+        candidates.sort(key=lambda x: x[0])
+
+        # Test line-of-sight on the closest candidates in ascending order
+        for _, node in candidates[:12]:
+            if not is_segment_crossing_land(lat, lon, node.lat, node.lon, sample_spacing_nm=1.0):
+                return node.node_id
+
+        # Fallback if harbor is deeply enclosed
+        return candidates[0][1].node_id
 
     def _find_second_nearest_node_id(
         self,
@@ -953,29 +999,22 @@ class RoutePlanningService:
         exclude_id: str,
     ) -> Optional[str]:
         """Finds the ID of the second nearest navigable node with unobstructed line-of-sight."""
-        best_id: Optional[str] = None
-        best_dist = float("inf")
-
+        candidates = []
         for node in graph.get_all_nodes():
-            if not node.is_navigable or node.node_id == exclude_id:
-                continue
-            if is_segment_crossing_land(lat, lon, node.lat, node.lon, sample_spacing_nm=1.0):
-                continue
-            dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
-            if dist < best_dist:
-                best_dist = dist
-                best_id = node.node_id
+            if node.is_navigable and node.node_id != exclude_id:
+                dist = (node.lat - lat) ** 2 + (node.lon - lon) ** 2
+                candidates.append((dist, node))
 
-        if best_id is None:
-            for node in graph.get_all_nodes():
-                if not node.is_navigable or node.node_id == exclude_id:
-                    continue
-                dist = calculate_haversine_distance(lat, lon, node.lat, node.lon)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_id = node.node_id
+        if not candidates:
+            return None
 
-        return best_id
+        candidates.sort(key=lambda x: x[0])
+
+        for _, node in candidates[:12]:
+            if not is_segment_crossing_land(lat, lon, node.lat, node.lon, sample_spacing_nm=1.0):
+                return node.node_id
+
+        return candidates[0][1].node_id
 
 
 def math_isclose_coords(lat1: float, lon1: float, lat2: float, lon2: float, tol: float = 1e-5) -> bool:
