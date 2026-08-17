@@ -23,6 +23,8 @@ export type PlanPhase = 'idle' | 'submitting' | 'planning' | 'ready' | 'failed'
 
 export interface RoutePlanState {
   phase: PlanPhase
+  stage: string | null
+  stageMessage: string | null
   route: RoutePreviewResponse | null
   elapsedSeconds: number
   /** 0-100, capped below 100 until the result actually lands. */
@@ -35,6 +37,8 @@ export interface RoutePlanState {
 
 const INITIAL: RoutePlanState = {
   phase: 'idle',
+  stage: null,
+  stageMessage: null,
   route: null,
   elapsedSeconds: 0,
   progressPercent: 0,
@@ -71,7 +75,7 @@ export function useRoutePlan() {
   const plan = useCallback(async (payload: RoutePreviewRequest) => {
     cancelRef.current = false
     clearTimer()
-    setState({ ...INITIAL, phase: 'submitting' })
+    setState({ ...INITIAL, phase: 'submitting', stageMessage: 'Submitting route plan…' })
 
     const startedAt = Date.now()
 
@@ -85,9 +89,11 @@ export function useRoutePlan() {
           ? {
               ...prev,
               elapsedSeconds: elapsed,
-              // Asymptotic: approaches but never reaches 100 while waiting, so
-              // the bar never implies completion before the route exists.
-              progressPercent: Math.min(95, (1 - Math.exp(-elapsed / TYPICAL_PLAN_SECONDS)) * 118),
+              // Fallback smooth ticker if server doesn't provide fine-grained percentage
+              progressPercent: Math.max(
+                prev.progressPercent,
+                Math.min(95, (1 - Math.exp(-elapsed / TYPICAL_PLAN_SECONDS)) * 118),
+              ),
             }
           : prev,
       )
@@ -101,6 +107,8 @@ export function useRoutePlan() {
         telemetry.log('info', `Route plan served from backend cache in ${job.elapsed_seconds}s`, 'useRoutePlan')
         setState({
           phase: 'ready',
+          stage: 'ready',
+          stageMessage: 'Route ready from cache',
           route: job.route,
           elapsedSeconds: job.elapsed_seconds,
           progressPercent: 100,
@@ -122,7 +130,13 @@ export function useRoutePlan() {
         return null
       }
 
-      setState((prev) => ({ ...prev, phase: 'planning' }))
+      setState((prev) => ({
+        ...prev,
+        phase: 'planning',
+        stage: job.stage ?? prev.stage,
+        stageMessage: job.stage_message ?? 'Sampling ocean currents & weather…',
+        progressPercent: job.progress_percent ?? prev.progressPercent,
+      }))
 
       while (!cancelRef.current && Date.now() - startedAt < MAX_WAIT_MS) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
@@ -142,6 +156,8 @@ export function useRoutePlan() {
           clearTimer()
           setState({
             phase: 'ready',
+            stage: 'ready',
+            stageMessage: 'Optimal route calculation complete',
             route: polled.route,
             elapsedSeconds: polled.elapsed_seconds,
             progressPercent: 100,
@@ -162,6 +178,16 @@ export function useRoutePlan() {
           })
           return null
         }
+
+        // Active planning update
+        setState((prev) => ({
+          ...prev,
+          stage: polled.stage ?? prev.stage,
+          stageMessage: polled.stage_message ?? prev.stageMessage,
+          progressPercent: polled.progress_percent
+            ? Math.max(prev.progressPercent, polled.progress_percent)
+            : prev.progressPercent,
+        }))
       }
 
       clearTimer()

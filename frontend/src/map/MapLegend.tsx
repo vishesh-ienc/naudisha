@@ -51,13 +51,7 @@ export function MapLegend({
               <span className="font-semibold text-emerald-400">NauDisha Optimal Route</span>
             </div>
 
-            {/* Direct / Original Baseline Route (Red) */}
-            {hasDirectRoute && (
-              <div className="flex items-center gap-2">
-                <span className="h-1.5 w-5 rounded-full border border-dashed border-rose-500 bg-rose-500/40" />
-                <span className="text-rose-400">Actual AIS Track / Baseline</span>
-              </div>
-            )}
+
 
 
             {/* Ship Marker */}

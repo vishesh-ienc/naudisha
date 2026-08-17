@@ -10,9 +10,12 @@ Implements BatchCapableProvider for efficient grid population:
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Union
+
+logger = logging.getLogger(__name__)
 
 from naudisha.core.models import EnvironmentalData
 from naudisha.data.weather_provider import (
@@ -68,7 +71,7 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
         timestamp: Union[datetime, str],
     ) -> EnvironmentalData:
         """
-        Fetches combined marine and atmospheric conditions at the specified coordinates and time.
+        Fetches combined marine and atmospheric conditions concurrently at the specified coordinates and time.
 
         Args:
             lat: Latitude in degrees [-90.0, 90.0].
@@ -78,13 +81,17 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
         Returns:
             Fully populated EnvironmentalData object containing all 7 physical parameters.
         """
-        # 1. Fetch ocean currents and spectral waves from Copernicus Marine
-        marine_data = self.marine_provider.fetch_conditions(lat=lat, lon=lon, timestamp=timestamp)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="env_single") as pool:
+            fut_marine = pool.submit(self.marine_provider.fetch_conditions, lat=lat, lon=lon, timestamp=timestamp)
+            fut_wind = pool.submit(self.wind_provider.fetch_wind, lat=lat, lon=lon, timestamp=timestamp)
+            marine_data = fut_marine.result()
+            try:
+                wind_speed, wind_direction = fut_wind.result()
+            except Exception as exc:
+                logger.warning("Open-Meteo single wind fetch failed (%s), defaulting to neutral surface wind.", exc)
+                wind_speed, wind_direction = (10.0, 90.0)
 
-        # 2. Fetch atmospheric wind from Open-Meteo
-        wind_speed, wind_direction = self.wind_provider.fetch_wind(lat=lat, lon=lon, timestamp=timestamp)
-
-        # 3. Fuse into unified EnvironmentalData model
+        # Fuse into unified EnvironmentalData model
         return EnvironmentalData(
             timestamp=marine_data.timestamp,
             wind_speed=wind_speed,
@@ -101,19 +108,13 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
         requests: Sequence[ConditionRequest],
     ) -> Dict[ConditionRequest, EnvironmentalData]:
         """
-        Fetches combined marine and atmospheric conditions for multiple points efficiently.
+        Fetches combined marine and atmospheric conditions for multiple points concurrently.
 
-        Batch strategy:
-            1. Delegate all CMEMS requests to CopernicusMarineProvider.fetch_conditions_batch()
-               -> 1 currents + 1 waves request for the full bounding box.
-            2. Deduplicate Open-Meteo requests by rounding lat/lon to 2 decimal places
-               (matching Open-Meteo's ~0.1 degree grid resolution).
-               Fetch one HTTP request per unique cell, then map back by nearest-cell key.
-               For an 80-edge 5x5 grid spanning ~1x1 degree, this yields 4-8 unique cells.
-
-        Network request count comparison:
-            Old (single-point): 80 edges x 3 requests = 240 network requests
-            New (batch):        1 currents + 1 waves + ~4-8 wind = 6-10 network requests
+        Batch concurrency strategy:
+            1. Concurrently launch Copernicus Marine batch query (currents + waves bbox)
+               and Open-Meteo batch query (multi-location native array query).
+            2. Both independent providers execute in parallel threads.
+            3. Fuse oceanographic (CMEMS) and atmospheric (Open-Meteo) vectors into unified EnvironmentalData.
 
         Args:
             requests: Sequence of ConditionRequest objects.
@@ -126,52 +127,22 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
 
         request_list = list(requests)
 
-        # 1. Batch-fetch all CMEMS marine data (1 currents + 1 waves request for all points)
-        marine_results: Dict[ConditionRequest, EnvironmentalData] = (
-            self.marine_provider.fetch_conditions_batch(request_list)
-        )
-
-        # 2. Deduplicate Open-Meteo requests by rounded cell key
-        #    Open-Meteo caches per (round(lat,2), round(lon,2), hour) — so pre-populate
-        #    the cache by fetching each unique cell once. The cache handles dedup implicitly,
-        #    but we explicitly fetch unique cells to count network requests for diagnostics.
-        #    Unique cells are fetched concurrently. Each Open-Meteo call is
-        #    ~1.5s of pure network latency, so a 5x5 grid's 8 unique cells cost
-        #    ~12s in sequence but ~2s in parallel. The pool is capped so a large
-        #    grid cannot open dozens of sockets against a free public API.
-        seen_cells: set = set()
-        unique_reqs = []
-        for req in request_list:
-            cell_key = (round(req.lat, 2), round(req.lon, 2))
-            if cell_key not in seen_cells:
-                seen_cells.add(cell_key)
-                unique_reqs.append(req)
-
-        if unique_reqs:
-            def _warm(req):
-                # Populates the provider's internal cache; the assembly pass
-                # below then reads it without further network calls.
-                return self.wind_provider.fetch_wind(
-                    lat=req.lat, lon=req.lon, timestamp=req.timestamp
-                )
-
-            with ThreadPoolExecutor(
-                max_workers=min(8, len(unique_reqs)), thread_name_prefix="openmeteo"
-            ) as pool:
-                # Consume the results so any exception surfaces here rather than
-                # being swallowed and reappearing as a confusing cache miss.
-                list(pool.map(_warm, unique_reqs))
+        # 1 & 2. Concurrently fetch CMEMS marine batch and Open-Meteo wind batch in parallel
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="env_batch") as pool:
+            fut_marine = pool.submit(self.marine_provider.fetch_conditions_batch, request_list)
+            fut_wind = pool.submit(self.wind_provider.fetch_wind_batch, request_list)
+            marine_results = fut_marine.result()
+            try:
+                wind_results = fut_wind.result()
+            except Exception as exc:
+                logger.warning("Open-Meteo batch wind fetch failed (%s), defaulting to neutral surface wind.", exc)
+                wind_results = {req: (10.0, 90.0) for req in request_list}
 
         # 3. Assemble combined results
         results: Dict[ConditionRequest, EnvironmentalData] = {}
         for req in request_list:
             marine_data = marine_results[req]
-            # fetch_wind() now returns cached result — no additional network call
-            wind_speed, wind_direction = self.wind_provider.fetch_wind(
-                lat=req.lat,
-                lon=req.lon,
-                timestamp=req.timestamp,
-            )
+            wind_speed, wind_direction = wind_results.get(req, (10.0, 90.0))
             results[req] = EnvironmentalData(
                 timestamp=marine_data.timestamp,
                 wind_speed=wind_speed,

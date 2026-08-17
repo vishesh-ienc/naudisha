@@ -290,6 +290,9 @@ def _job_to_response(job) -> PlanJobResponse:
     return PlanJobResponse(
         job_id=job.job_id,
         status=job.status,
+        stage=getattr(job, "stage", "planning"),
+        stage_message=getattr(job, "stage_message", None),
+        progress_percent=getattr(job, "progress_percent", 0.0),
         elapsed_seconds=round(job.elapsed_seconds, 2),
         route=_to_preview_response(job.result) if job.result is not None else None,
         error=(

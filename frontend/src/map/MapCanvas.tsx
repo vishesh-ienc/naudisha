@@ -258,41 +258,7 @@ export function MapCanvas({
           />
         )}
 
-        {/* 1. DIRECT / BASELINE ROUTE — RENDERED IN RED */}
-        {effectiveDirectRoute.length > 0 && (
-          <>
-            {/* Red Underlay Glow */}
-            <Polyline
-              positions={effectiveDirectRoute}
-              pathOptions={{
-                color: '#ef4444',
-                weight: 6,
-                opacity: 0.25,
-                lineCap: 'round',
-              }}
-            />
-            {/* Red Dashed Core Line */}
-            <Polyline
-              positions={effectiveDirectRoute}
-              pathOptions={{
-                color: '#f43f5e',
-                weight: 3.5,
-                opacity: 0.85,
-                dashArray: '8, 8',
-                lineCap: 'round',
-              }}
-            >
-              <Popup className="naudisha-popup">
-                <div className="p-1.5 font-sans text-xs">
-                  <div className="font-bold text-rose-400">Direct Baseline Track (Unoptimized)</div>
-                  <p className="mt-1 text-muted-foreground">
-                    Straight-line path vulnerable to adverse currents, wave resistance, and wind drag.
-                  </p>
-                </div>
-              </Popup>
-            </Polyline>
-          </>
-        )}
+
 
         {/* 2. NAUDISHA OPTIMAL ROUTE — RENDERED IN VIBRANT GREEN */}
         {smoothedOptimalPositions.length > 0 && (

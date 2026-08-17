@@ -366,20 +366,22 @@ class ErrorResponse(BaseModel):
 # Pydantic resolves field types at class construction.
 class PlanJobResponse(BaseModel):
     """
-    Response for an asynchronous planning job.
-
-    A cold plan costs 75-85s of live Copernicus queries, which no HTTP client
-    should block on. Clients submit a job, then poll until `status` leaves
-    "planning".
+    Response schema for asynchronous route planning.
+    POST /api/routes/plan, GET /api/routes/plan/{job_id}
     """
-    job_id: str = Field(..., description="Identifier used to poll for the result")
-    status: str = Field(..., description="'planning' | 'ready' | 'failed'")
-    elapsed_seconds: float = Field(0.0, description="Seconds since the job was submitted")
+    job_id: str = Field(..., description="Unique planning job identifier")
+    status: str = Field(..., description="Job status: 'planning', 'ready', or 'failed'")
+    stage: Optional[str] = Field("planning", description="Current execution stage of route planner")
+    stage_message: Optional[str] = Field(None, description="Human-readable stage description")
+    progress_percent: Optional[float] = Field(0.0, description="Estimated completion percentage [0-100]")
+    elapsed_seconds: float = Field(..., description="Seconds since the planning job was submitted")
     route: Optional[RoutePreviewResponse] = Field(
-        None, description="Populated once status is 'ready'"
+        None,
+        description="The planned route result; present only when status == 'ready'",
     )
     error: Optional[ErrorDetail] = Field(
-        None, description="Populated once status is 'failed'"
+        None,
+        description="Error detail; present only when status == 'failed'",
     )
 
 

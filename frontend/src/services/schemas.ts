@@ -106,6 +106,9 @@ export const apiErrorDetailSchema = z.object({
 export const planJobResponseSchema = z.object({
   job_id: z.string(),
   status: z.enum(['planning', 'ready', 'failed']),
+  stage: z.string().nullable().optional(),
+  stage_message: z.string().nullable().optional(),
+  progress_percent: z.number().nullable().optional(),
   elapsed_seconds: z.number().nonnegative(),
   route: routePreviewResponseSchema.nullable().optional(),
   error: apiErrorDetailSchema.nullable().optional(),

@@ -81,11 +81,15 @@ export function shipIcon(headingDeg = 0, isSimulated = false) {
   )
 }
 
-/** Animated Directional Wind Vector marker with speed label */
-export function windVectorIcon(directionDeg = 0, speedKn = 0) {
+/** Animated Directional Wind Vector marker with speed label and true flow orientation */
+export function windVectorIcon(fromDirectionDeg = 0, speedKn = 0) {
+  // Meteorological wind direction is where the wind blows FROM.
+  // Visual streamline arrow must point in the direction the wind is blowing TOWARDS.
+  const flowDirectionDeg = (fromDirectionDeg + 180) % 360
+
   return svgIcon(
-    `<div class="animate-wind-flow" style="display:flex; flex-direction:column; align-items:center; width:38px; height:38px;" title="Wind: ${Math.round(speedKn)} kn from ${Math.round(directionDeg)}°">
-       <div style="transform: rotate(${directionDeg}deg); transform-origin: 50% 50%; width:26px; height:26px;">
+    `<div class="animate-wind-flow" style="display:flex; flex-direction:column; align-items:center; width:38px; height:38px;" title="Wind: ${Math.round(speedKn)} kn from ${Math.round(fromDirectionDeg)}°">
+       <div style="transform: rotate(${flowDirectionDeg}deg); transform-origin: 50% 50%; width:26px; height:26px;">
          <svg viewBox="0 0 26 26" width="26" height="26" xmlns="http://www.w3.org/2000/svg">
            <circle cx="13" cy="13" r="11" fill="#0284c7" fill-opacity="0.18"/>
            <path d="M13 21 V5 M13 5 L8 10 M13 5 L18 10" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -100,14 +104,14 @@ export function windVectorIcon(directionDeg = 0, speedKn = 0) {
   )
 }
 
-/** Animated Ocean Current Vector marker with assist/oppose indicator */
+/** Animated Ocean Current Vector marker with assist/oppose indicator and true flow orientation */
 export function currentVectorIcon(directionDeg = 0, speedKn = 0, isAssist = true) {
   const color = isAssist ? '#10b981' : '#f59e0b'
   const bgBadge = isAssist ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'
   const textBadge = isAssist ? '#34d399' : '#fbbf24'
 
   return svgIcon(
-    `<div class="animate-current-drift" style="display:flex; flex-direction:column; align-items:center; width:36px; height:36px;" title="Current: ${speedKn.toFixed(1)} kn ${isAssist ? '(Assisting)' : '(Opposing)'}">
+    `<div class="animate-current-drift" style="display:flex; flex-direction:column; align-items:center; width:36px; height:36px;" title="Current: ${speedKn.toFixed(1)} kn towards ${Math.round(directionDeg)}° ${isAssist ? '(Assisting)' : '(Opposing Head Current)'}">
        <div style="transform: rotate(${directionDeg}deg); transform-origin: 50% 50%; width:24px; height:24px;">
          <svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg">
            <circle cx="12" cy="12" r="10" fill="${color}" fill-opacity="0.2"/>

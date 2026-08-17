@@ -133,6 +133,9 @@ export type PlanJobStatus = 'planning' | 'ready' | 'failed'
 export interface PlanJobResponse {
   job_id: string
   status: PlanJobStatus
+  stage?: string | null
+  stage_message?: string | null
+  progress_percent?: number | null
   elapsed_seconds: number
   route?: RoutePreviewResponse | null
   error?: ApiErrorDetail | null

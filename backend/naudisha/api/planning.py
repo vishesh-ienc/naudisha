@@ -47,6 +47,9 @@ PlanStatus = str  # "planning" | "ready" | "failed"
 class PlanJob:
     job_id: str
     status: PlanStatus = "planning"
+    stage: str = "preparing"
+    stage_message: Optional[str] = "Initializing route planning"
+    progress_percent: float = 0.0
     created_at: float = field(default_factory=time.monotonic)
     finished_at: Optional[float] = None
     result: Optional[RoutePlanResult] = None
@@ -184,6 +187,14 @@ class PlanningManager:
                     logger.warning("Vessel profile lookup failed for job %s: %s", job.job_id, exc)
                     plan_kwargs["ship_profile"] = None
 
+            def _on_stage(stage_id: str, pct: float, msg: str) -> None:
+                with self._lock:
+                    job.stage = stage_id
+                    job.progress_percent = pct
+                    job.stage_message = msg
+
+            plan_kwargs["stage_callback"] = _on_stage
+
             result = service.plan_preview_route(**plan_kwargs)
             logger.info(
                 "Plan job %s completed in %.1fs (%d waypoints)",
@@ -195,6 +206,9 @@ class PlanningManager:
             with self._lock:
                 job.result = result
                 job.status = "ready"
+                job.stage = "ready"
+                job.stage_message = "Route optimization complete"
+                job.progress_percent = 100.0
                 job.finished_at = time.monotonic()
                 self._cache[signature] = (time.monotonic(), result)
                 self._inflight.pop(signature, None)

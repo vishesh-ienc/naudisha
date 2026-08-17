@@ -21,6 +21,7 @@ from naudisha.core.models import (
 )
 from naudisha.cost.model import CostModel
 from naudisha.data.weather_provider import WeatherProvider, BatchCapableProvider, ConditionRequest
+from naudisha.routing.land_mask import is_point_on_land, is_segment_crossing_land
 
 
 class GridEnvironmentUpdateError(Exception):
@@ -143,6 +144,18 @@ class GeographicGridGraph:
     - Complete query interfaces for D* Lite (successors, predecessors, costs, navigability).
     """
 
+    # 8-Direction movement offsets: (d_row, d_col, direction_name)
+    DIRECTIONS_8: List[Tuple[int, int, str]] = [
+        (1, 0, "North"),
+        (-1, 0, "South"),
+        (0, 1, "East"),
+        (0, -1, "West"),
+        (1, 1, "North-East"),
+        (1, -1, "North-West"),
+        (-1, 1, "South-East"),
+        (-1, -1, "South-West"),
+    ]
+
     # 4-Direction movement offsets: (d_row, d_col, direction_name)
     DIRECTIONS_4: List[Tuple[int, int, str]] = [
         (1, 0, "North"),
@@ -158,12 +171,14 @@ class GeographicGridGraph:
         default_ship: Optional[ShipProfile] = None,
         default_weights: Optional[CostWeights] = None,
         environment_provider: Optional[WeatherProvider] = None,
+        connectivity: int = 4,
     ) -> None:
         self.config = config
         self.cost_model = cost_model or CostModel()
         self.default_ship = default_ship
         self.default_weights = default_weights or CostWeights()
         self.environment_provider = environment_provider
+        self.connectivity = connectivity
 
         self._nodes: Dict[str, GridNode] = {}
         self._grid_lookup: Dict[Tuple[int, int], str] = {}  # (row, col) -> node_id
@@ -174,7 +189,7 @@ class GeographicGridGraph:
         self._build_grid()
 
     def _build_grid(self) -> None:
-        """Constructs nodes and 4-connected directed edges for the grid."""
+        """Constructs nodes and directed edges (4 or 8-connected) for the grid."""
         # 1. Create Nodes
         for r in range(self.config.rows):
             for c in range(self.config.cols):
@@ -195,13 +210,14 @@ class GeographicGridGraph:
                 self._outgoing[node_id] = set()
                 self._incoming[node_id] = set()
 
-        # 2. Create 4-direction directed edges
+        # 2. Create directed edges based on connectivity
+        directions = self.DIRECTIONS_8 if self.connectivity == 8 else self.DIRECTIONS_4
         for r in range(self.config.rows):
             for c in range(self.config.cols):
                 source_id = self._grid_lookup[(r, c)]
                 source_node = self._nodes[source_id]
 
-                for dr, dc, _ in self.DIRECTIONS_4:
+                for dr, dc, _ in directions:
                     nr, nc = r + dr, c + dc
                     if 0 <= nr < self.config.rows and 0 <= nc < self.config.cols:
                         target_id = self._grid_lookup[(nr, nc)]
@@ -525,12 +541,13 @@ class GeographicGridGraph:
         # Identify all navigable edges and compute their midpoints
         navigable_edges: List[Tuple[str, str]] = []
         non_navigable_edges: List[Tuple[str, str]] = []
-        for (source_id, target_id) in list(self._edges.keys()):
+        for (source_id, target_id), edge in list(self._edges.items()):
             source_node = self._nodes.get(source_id)
             target_node = self._nodes.get(target_id)
             if (
                 not source_node or not target_node
                 or not source_node.is_navigable or not target_node.is_navigable
+                or not edge.is_navigable
             ):
                 non_navigable_edges.append((source_id, target_id))
             else:
@@ -548,22 +565,32 @@ class GeographicGridGraph:
 
         # ---- Batch path ----
         if isinstance(active_provider, BatchCapableProvider):
-            requests = [
-                ConditionRequest(
-                    lat=self.get_edge_midpoint(src, tgt)[0],
-                    lon=self.get_edge_midpoint(src, tgt)[1],
-                    timestamp=timestamp,
-                )
-                for src, tgt in navigable_edges
-            ]
+            edge_midpoints: Dict[Tuple[str, str], Tuple[float, float]] = {}
+            unique_midpoint_reqs: Dict[Tuple[float, float], ConditionRequest] = {}
+            for src, tgt in navigable_edges:
+                mid = self.get_edge_midpoint(src, tgt)
+                mid_key = (round(mid[0], 4), round(mid[1], 4))
+                edge_midpoints[(src, tgt)] = mid
+                if mid_key not in unique_midpoint_reqs:
+                    unique_midpoint_reqs[mid_key] = ConditionRequest(
+                        lat=mid[0],
+                        lon=mid[1],
+                        timestamp=timestamp,
+                    )
+
+            unique_requests = list(unique_midpoint_reqs.values())
+
             try:
-                batch_results = active_provider.fetch_conditions_batch(requests)
+                batch_results = active_provider.fetch_conditions_batch(unique_requests)
             except Exception as exc:
                 raise GridEnvironmentUpdateError(
                     f"Batch environmental fetch failed during populate_environment(): {exc}"
                 ) from exc
 
-            for (source_id, target_id), req in zip(navigable_edges, requests):
+            for (source_id, target_id) in navigable_edges:
+                mid = edge_midpoints[(source_id, target_id)]
+                mid_key = (round(mid[0], 4), round(mid[1], 4))
+                req = unique_midpoint_reqs[mid_key]
                 env = batch_results.get(req)
                 if env is None:
                     raise GridEnvironmentUpdateError(

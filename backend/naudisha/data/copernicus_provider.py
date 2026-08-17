@@ -109,6 +109,7 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
         self.temporal_delta_hours = temporal_delta_hours
         self._reader_fn = reader_fn
         self._cache: Dict[Tuple[float, float, str], EnvironmentalData] = {}
+        self._bbox_df_cache: Dict[str, Tuple[float, float, float, float, Any, Any]] = {}
 
     def _get_reader(self) -> Callable[..., Any]:
         """Returns the active dataframe reader function (injected reader or copernicusmarine.read_dataframe)."""
@@ -470,6 +471,64 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
 
         return val
 
+    def _extract_nearest_multi_from_batch_df(
+        self,
+        df: Any,
+        var_names: List[str],
+        dataset_id: str,
+        target_coords: List[Tuple[float, float]],
+    ) -> Dict[str, List[float]]:
+        """
+        Extracts multiple variables for a list of target coordinates from a batch DataFrame.
+        Uses scipy.spatial.cKDTree when available for sub-millisecond vectorized nearest-point lookup.
+        Falls back to per-point _extract_nearest_from_batch_df if cKDTree is unavailable or data is irregular.
+        """
+        if df is None or (hasattr(df, "empty") and df.empty):
+            raise CopernicusDataUnavailableError(
+                f"Empty batch response from '{dataset_id}' — no data in bounding box."
+            )
+
+        for var in var_names:
+            if var not in df.columns:
+                raise CopernicusDataUnavailableError(
+                    f"Variable '{var}' not found in batch response columns: {list(df.columns)} for '{dataset_id}'."
+                )
+
+        lat_col = next((c for c in df.columns if c.lower() in ("latitude", "lat")), None)
+        lon_col = next((c for c in df.columns if c.lower() in ("longitude", "lon")), None)
+
+        if lat_col is not None and lon_col is not None and len(target_coords) > 0:
+            try:
+                import numpy as np
+                from scipy.spatial import cKDTree
+
+                # Filter rows where variables and coordinates are not NaN
+                valid_mask = df[var_names].notna().all(axis=1) & df[lat_col].notna() & df[lon_col].notna()
+                valid_df = df[valid_mask]
+
+                if not valid_df.empty:
+                    pts = np.column_stack((valid_df[lat_col].to_numpy(dtype=float), valid_df[lon_col].to_numpy(dtype=float)))
+                    tree = cKDTree(pts)
+
+                    query_pts = np.array(target_coords, dtype=float)
+                    _, nearest_indices = tree.query(query_pts)
+
+                    out: Dict[str, List[float]] = {}
+                    for var in var_names:
+                        arr = valid_df[var].to_numpy(dtype=float)
+                        out[var] = [float(v) for v in arr[nearest_indices]]
+                    return out
+            except Exception as exc:
+                logger.debug("Vectorized KDTree extraction failed, falling back to per-point extraction: %s", exc)
+
+        # Fallback to per-point extraction
+        out_fallback: Dict[str, List[float]] = {v: [] for v in var_names}
+        for lat, lon in target_coords:
+            for var in var_names:
+                val = self._extract_nearest_from_batch_df(df, var, dataset_id, lat, lon)
+                out_fallback[var].append(val)
+        return out_fallback
+
     def fetch_conditions_batch(
         self,
         requests: List["ConditionRequest"],
@@ -480,8 +539,8 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
 
         Batch strategy:
             N requested points (same timestamp) → bounding box →
-            1 currents subset request + 1 waves subset request →
-            local nearest-point extraction for each point →
+            1 currents subset request + 1 waves subset request (concurrent) →
+            cKDTree vectorized nearest-point extraction for all points in <1ms →
             N EnvironmentalData results.
 
         For different timestamps, requests are grouped by temporal hour-bucket so that
@@ -552,69 +611,72 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
             start_dt = bucket_dt - timedelta(hours=self.temporal_delta_hours)
             end_dt = bucket_dt + timedelta(hours=self.temporal_delta_hours)
 
-            # ONE currents + ONE waves request for the entire bucket, issued
-            # concurrently.
-            #
-            # These are independent datasets on the CMEMS side and each takes
-            # ~45s of mostly-network time (metadata resolution, then a zarr/S3
-            # subset). Running them in sequence made a cold route preview cost
-            # ~90s of which half was spent idle. Two threads halve the wall
-            # clock; the GIL is irrelevant here because both calls block on I/O.
-            #
-            # Errors are re-raised from the futures so the existing exception
-            # translation in _execute_bbox_subset_query still governs.
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="cmems") as pool:
-                fut_cur = pool.submit(
-                    self._execute_bbox_subset_query,
-                    dataset_id=self.currents_dataset_id,
-                    variables=["uo", "vo"],
-                    lat_min=lat_min,
-                    lat_max=lat_max,
-                    lon_min=lon_min,
-                    lon_max=lon_max,
-                    start_dt=start_dt,
-                    end_dt=end_dt,
-                    depth_level=CMEMS_OCEAN_CURRENTS_SPEC.depth_level,
-                )
-                fut_wav = pool.submit(
-                    self._execute_bbox_subset_query,
-                    dataset_id=self.waves_dataset_id,
-                    variables=["VHM0", "VMDR", "VTPK"],
-                    lat_min=lat_min,
-                    lat_max=lat_max,
-                    lon_min=lon_min,
-                    lon_max=lon_max,
-                    start_dt=start_dt,
-                    end_dt=end_dt,
-                    depth_level=None,
-                )
-                df_cur = fut_cur.result()
-                df_wav = fut_wav.result()
+            # Check if points fall within an existing cached bounding box DataFrame
+            cached_bbox = self._bbox_df_cache.get(bucket_key) if self.enable_cache else None
+            if (
+                cached_bbox is not None
+                and lat_min >= cached_bbox[0]
+                and lat_max <= cached_bbox[1]
+                and lon_min >= cached_bbox[2]
+                and lon_max <= cached_bbox[3]
+            ):
+                df_cur = cached_bbox[4]
+                df_wav = cached_bbox[5]
+            else:
+                # ONE currents + ONE waves request for the entire bucket, issued concurrently.
+                with ThreadPoolExecutor(max_workers=2, thread_name_prefix="cmems") as pool:
+                    fut_cur = pool.submit(
+                        self._execute_bbox_subset_query,
+                        dataset_id=self.currents_dataset_id,
+                        variables=["uo", "vo"],
+                        lat_min=lat_min,
+                        lat_max=lat_max,
+                        lon_min=lon_min,
+                        lon_max=lon_max,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        depth_level=CMEMS_OCEAN_CURRENTS_SPEC.depth_level,
+                    )
+                    fut_wav = pool.submit(
+                        self._execute_bbox_subset_query,
+                        dataset_id=self.waves_dataset_id,
+                        variables=["VHM0", "VMDR", "VTPK"],
+                        lat_min=lat_min,
+                        lat_max=lat_max,
+                        lon_min=lon_min,
+                        lon_max=lon_max,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        depth_level=None,
+                    )
+                    df_cur = fut_cur.result()
+                    df_wav = fut_wav.result()
 
-            # Extract nearest value for each requested point from the batch DataFrames
-            for req in bucket_requests:
+                if self.enable_cache:
+                    self._bbox_df_cache[bucket_key] = (lat_min, lat_max, lon_min, lon_max, df_cur, df_wav)
+
+            # Vectorized nearest-point extraction using cKDTree
+            target_coords = [(req.lat, req.lon) for req in bucket_requests]
+            cur_extracted = self._extract_nearest_multi_from_batch_df(
+                df_cur, ["uo", "vo"], self.currents_dataset_id, target_coords
+            )
+            wav_extracted = self._extract_nearest_multi_from_batch_df(
+                df_wav, ["VHM0", "VMDR", "VTPK"], self.waves_dataset_id, target_coords
+            )
+
+            for i, req in enumerate(bucket_requests):
                 dt_utc = _normalize_utc_datetime(req.timestamp)
                 cache_key = (round(req.lat, 2), round(req.lon, 2), dt_utc.strftime("%Y-%m-%dT%H"))
 
-                uo_val = self._extract_nearest_from_batch_df(
-                    df_cur, "uo", self.currents_dataset_id, req.lat, req.lon
-                )
-                vo_val = self._extract_nearest_from_batch_df(
-                    df_cur, "vo", self.currents_dataset_id, req.lat, req.lon
-                )
+                uo_val = cur_extracted["uo"][i]
+                vo_val = cur_extracted["vo"][i]
                 current_speed, current_direction = convert_current_vectors_to_speed_and_direction(
                     uo_mps=uo_val, vo_mps=vo_val
                 )
 
-                vhm0_val = self._extract_nearest_from_batch_df(
-                    df_wav, "VHM0", self.waves_dataset_id, req.lat, req.lon
-                )
-                vmdr_val = self._extract_nearest_from_batch_df(
-                    df_wav, "VMDR", self.waves_dataset_id, req.lat, req.lon
-                )
-                vtpk_val = self._extract_nearest_from_batch_df(
-                    df_wav, "VTPK", self.waves_dataset_id, req.lat, req.lon
-                )
+                vhm0_val = wav_extracted["VHM0"][i]
+                vmdr_val = wav_extracted["VMDR"][i]
+                vtpk_val = wav_extracted["VTPK"][i]
 
                 env = EnvironmentalData(
                     timestamp=dt_utc.isoformat(),

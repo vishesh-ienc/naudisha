@@ -54,7 +54,7 @@ export function PlanVoyagePage() {
   const consoleRef = useRef<HTMLDivElement>(null)
 
   // Asynchronous planning engine hook
-  const { phase, route, elapsedSeconds, progressPercent, error: planError, plan } = useRoutePlan()
+  const { phase, stage, stageMessage, route, elapsedSeconds, progressPercent, error: planError, plan } = useRoutePlan()
 
   const handlePlan = useCallback(async () => {
     if (!originCoord || !destCoord) return
@@ -264,6 +264,8 @@ export function PlanVoyagePage() {
             shipName={selectedVessel.name}
             isPlanning={isPlanning}
             planningPhase={phase}
+            stage={stage}
+            stageMessage={stageMessage}
             elapsedSeconds={elapsedSeconds}
           />
         </div>

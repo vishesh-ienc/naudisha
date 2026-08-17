@@ -31,19 +31,25 @@ interface CalculationConsoleProps {
   shipName?: string
   isPlanning?: boolean
   planningPhase?: string
+  stage?: string | null
+  stageMessage?: string | null
   elapsedSeconds?: number
   className?: string
 }
 
-// Which of the 5 lifecycle steps appears "done" based on elapsed time
-function getLifecycleStep(elapsed: number, isPlanning: boolean, isDone: boolean): number {
+// Which of the 5 lifecycle steps appears active/done based on real backend stage and elapsed time
+function getLifecycleStep(stage: string | null | undefined, elapsed: number, isPlanning: boolean, isDone: boolean): number {
   if (isDone) return 5
   if (!isPlanning) return 0
-  if (elapsed < 3) return 1
-  if (elapsed < 8) return 2
-  if (elapsed < 14) return 3
-  if (elapsed < 20) return 4
-  return 4 // stays at 4 (solving) until complete
+  if (stage === 'building_grid') return 1
+  if (stage === 'sampling_environment') return 2
+  if (stage === 'evaluating_costs') return 3
+  if (stage === 'solving_dstar') return 4
+  if (stage === 'reconstructing_route') return 5
+  if (elapsed < 2) return 1
+  if (elapsed < 5) return 2
+  if (elapsed < 8) return 3
+  return 4
 }
 
 const LIFECYCLE_STEPS = [
@@ -59,11 +65,13 @@ export function CalculationConsole({
   shipName,
   isPlanning = false,
   planningPhase,
+  stage,
+  stageMessage,
   elapsedSeconds = 0,
   className,
 }: CalculationConsoleProps) {
   const isDone = !!route
-  const currentStep = getLifecycleStep(elapsedSeconds, isPlanning, isDone)
+  const currentStep = getLifecycleStep(stage, elapsedSeconds, isPlanning, isDone)
 
   const legs: RouteLeg[] = route?.legs ?? []
 
@@ -202,8 +210,9 @@ export function CalculationConsole({
                     transition={{ duration: 0.5 }}
                   />
                 </div>
-                <div className="mt-1.5 text-right font-mono text-[10px] text-muted-foreground">
-                  {Math.round(elapsedSeconds)}s elapsed
+                <div className="mt-2 flex items-center justify-between font-mono text-[10px] text-muted-foreground">
+                  <span>{stageMessage || 'Optimizing navigation track…'}</span>
+                  <span>{Math.round(elapsedSeconds)}s elapsed</span>
                 </div>
               </div>
             </motion.div>

@@ -8,24 +8,37 @@ Strictly contains NO routing mathematics or D* Lite internals.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple, Union
+
+import numpy as np
 
 from naudisha.core.calculations import calculate_haversine_distance
 from naudisha.core.models import (
     CostWeights,
     EnvironmentalData,
+    SegmentData,
     ShipProfile,
 )
 from naudisha.cost.model import CostModel
 from naudisha.data.composite_provider import CompositeEnvironmentalProvider
-from naudisha.data.weather_provider import WeatherProvider
+from naudisha.data.weather_provider import (
+    WeatherProvider,
+    BatchCapableProvider,
+    ConditionRequest,
+)
 from naudisha.routing.dstar_lite import DStarLite
 from naudisha.routing.graph import (
     GeographicGridGraph,
     GridConfig,
     GridEnvironmentUpdateError,
+)
+from naudisha.routing.land_mask import (
+    is_point_on_land,
+    is_segment_crossing_land,
+    is_cross_peninsular_voyage,
 )
 from naudisha.api.errors import (
     EnvironmentUnavailableError,
@@ -225,6 +238,7 @@ class RoutePlanningService:
         timestamp: Optional[Union[datetime, str]] = None,
         ship_profile: Optional[ShipProfile] = None,
         optimization_objective: Optional[str] = None,
+        stage_callback: Optional[Callable[[str, float, str], None]] = None,
     ) -> RoutePlanResult:
         """
         Calculates an optimal route between start and destination coordinates.
@@ -237,6 +251,8 @@ class RoutePlanningService:
             dest_lon: Destination longitude [-180.0, 180.0].
             timestamp: Optional UTC timestamp for environmental sampling.
             ship_profile: Optional vessel profile (falls back to service default).
+            optimization_objective: Optional objective (fuel_efficiency, fastest, safety, balanced).
+            stage_callback: Optional progress reporter callback (stage_id, progress_percent, message).
 
         Returns:
             RoutePlanResult containing waypoints, distance, time, cost, departure_time, and eta.
@@ -288,12 +304,18 @@ class RoutePlanningService:
             )
 
         # 2. Build or retrieve graph covering voyage corridor
+        if stage_callback:
+            stage_callback("building_grid", 15.0, "Building geographic navigation corridor")
+
         if self.graph_factory:
             graph = self.graph_factory(start_lat, start_lon, dest_lat, dest_lon)
         else:
             graph = self._build_bounding_grid(start_lat, start_lon, dest_lat, dest_lon, ship=effective_ship)
 
         # 3. Populate environment using BatchCapableProvider pipeline
+        if stage_callback:
+            stage_callback("sampling_environment", 35.0, "Sampling ocean currents, waves & atmospheric wind fields")
+
         if self.environment_provider is not None:
             try:
                 graph.populate_environment(
@@ -340,6 +362,9 @@ class RoutePlanningService:
                 dest_node_id = second_dest
 
         # 5. Run D* Lite path planning
+        if stage_callback:
+            stage_callback("solving_dstar", 80.0, "Running D* Lite optimal path search")
+
         dstar = DStarLite(graph=graph, start_id=start_node_id, goal_id=dest_node_id)
         reachable = dstar.compute_shortest_path()
         path = dstar.get_path()
@@ -348,110 +373,125 @@ class RoutePlanningService:
         if not reachable or not path:
             raise RouteNotFoundError("No navigable maritime route could be found between specified coordinates.")
 
-        # 6. Extract waypoints and calculate route metrics
-        route_coords: List[Tuple[float, float]] = []
-        total_nm = 0.0
-        total_hours = 0.0
+        # 6. Extract raw path coordinates and apply Line-of-Sight Nautical Smoothing
+        if stage_callback:
+            stage_callback("reconstructing_route", 95.0, "Assembling smoothed nautical passage & ETAs")
 
+        raw_coords: List[Tuple[float, float]] = []
+        raw_coords.append((float(start_lat), float(start_lon)))
         for node_id in path:
             node = graph.get_node(node_id)
             if node:
-                route_coords.append((round(node.lat, 4), round(node.lon, 4)))
+                raw_coords.append((float(node.lat), float(node.lon)))
+        raw_coords.append((float(dest_lat), float(dest_lon)))
 
+        # 6a. Nautical Line-of-Sight Path Smoothing (Funnel / String-Pulling):
+        # 6a. Nautical Line-of-Sight Path Smoothing (Funnel / String-Pulling):
+        # Eliminates jagged Manhattan right-angle staircases on open water
+        # while strictly preserving land avoidance around headlands, straits, and islands.
+        smoothed_coords: List[Tuple[float, float]] = [raw_coords[0]]
+        curr_i = 0
+        while curr_i < len(raw_coords) - 1:
+            farthest_i = curr_i + 1
+            for next_i in range(len(raw_coords) - 1, curr_i, -1):
+                p1 = raw_coords[curr_i]
+                p2 = raw_coords[next_i]
+                if not is_segment_crossing_land(p1[0], p1[1], p2[0], p2[1], sample_spacing_nm=3.0):
+                    farthest_i = next_i
+                    break
+            smoothed_coords.append(raw_coords[farthest_i])
+            curr_i = farthest_i
+
+        # 6b. Interpolate track for smooth visual rendering and environmental resolution (max ~35 NM legs)
+        dense_track: List[Tuple[float, float]] = [smoothed_coords[0]]
+        max_leg_nm = 35.0
+        for i in range(len(smoothed_coords) - 1):
+            p1 = smoothed_coords[i]
+            p2 = smoothed_coords[i + 1]
+            d_nm = calculate_haversine_distance(p1[0], p1[1], p2[0], p2[1])
+            if d_nm > max_leg_nm:
+                steps = max(1, round(d_nm / max_leg_nm))
+                lats = np.linspace(p1[0], p2[0], steps + 1)[1:]
+                lons = np.linspace(p1[1], p2[1], steps + 1)[1:]
+                for lat, lon in zip(lats, lons):
+                    dense_track.append((float(lat), float(lon)))
+            else:
+                dense_track.append(p2)
+
+        # Safety validation: Ensure no interpolated waypoint falls on land
+        has_land_violation = any(is_point_on_land(pt[0], pt[1]) for pt in dense_track)
+        if has_land_violation:
+            # Fallback to the collision-free grid waypoints if smoothing clipped a narrow channel
+            dense_track = raw_coords
+
+        # 6c. Build RouteLegResults along the smoothed nautical track
+        route_coords = [(round(lat, 4), round(lon, 4)) for lat, lon in dense_track]
         legs: List[RouteLegResult] = []
+        total_nm = 0.0
+        total_hours = 0.0
+        total_cost_acc = 0.0
 
-        for i in range(len(path) - 1):
-            edge = graph.get_edge(path[i], path[i + 1])
-            n1 = graph.get_node(path[i])
-            n2 = graph.get_node(path[i + 1])
+        # Retrieve environmental conditions for each leg from the already-populated graph edges
+        def _get_graph_env(mlat: float, mlon: float) -> EnvironmentalData:
+            nearest_id = self._find_nearest_node_id(graph, mlat, mlon)
+            if nearest_id:
+                for tgt_id in graph._outgoing.get(nearest_id, set()):
+                    edge = graph.get_edge(nearest_id, tgt_id)
+                    if edge and edge.env_data:
+                        return edge.env_data
+            return EnvironmentalData(timestamp=dep_iso)
 
-            if edge and edge.evaluation and edge.evaluation.metrics:
-                metrics = edge.evaluation.metrics
-                total_nm += metrics.distance_nm
-                total_hours += metrics.travel_time_hours
+        for i in range(len(dense_track) - 1):
+            p1 = dense_track[i]
+            p2 = dense_track[i + 1]
+            seg_data = SegmentData(start_lat=p1[0], start_lon=p1[1], end_lat=p2[0], end_lon=p2[1], is_navigable=True)
 
-                # The cost model has already derived everything below while
-                # evaluating this edge; surfacing it costs nothing and is what
-                # allows a client to explain the routing decision.
-                env = edge.env_data
-                scores = edge.evaluation.scores
+            mid_lat = (p1[0] + p2[0]) / 2.0
+            mid_lon = (p1[1] + p2[1]) / 2.0
+            env = _get_graph_env(mid_lat, mid_lon)
 
-                legs.append(
-                    RouteLegResult(
-                        from_lat=round(n1.lat, 4) if n1 else 0.0,
-                        from_lon=round(n1.lon, 4) if n1 else 0.0,
-                        to_lat=round(n2.lat, 4) if n2 else 0.0,
-                        to_lon=round(n2.lon, 4) if n2 else 0.0,
-                        distance_nm=round(metrics.distance_nm, 2),
-                        travel_time_hours=round(metrics.travel_time_hours, 3),
-                        bearing=round(metrics.bearing, 1),
-                        cost=round(edge.cost, 4),
-                        wind_speed_kn=_opt_round(getattr(env, "wind_speed", None), 1),
-                        wind_direction_deg=_opt_round(getattr(env, "wind_direction", None), 0),
-                        wave_height_m=_opt_round(getattr(env, "wave_height", None), 2),
-                        wave_period_s=_opt_round(getattr(env, "wave_period", None), 1),
-                        current_speed_kn=_opt_round(getattr(env, "current_speed", None), 2),
-                        current_direction_deg=_opt_round(getattr(env, "current_direction", None), 0),
-                        relative_wind_dir=round(metrics.relative_wind_dir, 1),
-                        relative_current_dir=round(metrics.relative_current_dir, 1),
-                        along_track_current_kn=round(metrics.along_track_current, 3),
-                        effective_speed_kn=round(metrics.effective_speed, 2),
-                        time_score=round(scores.time_score, 4),
-                        fuel_score=round(scores.fuel_score, 4),
-                        wind_score=round(scores.wind_score, 4),
-                        wave_score=round(scores.wave_score, 4),
-                        current_score=round(scores.current_score, 4),
-                        safety_score=round(scores.safety_score, 4),
-                    )
+            eval_res = self.cost_model.evaluate_segment(
+                segment=seg_data,
+                ship=effective_ship,
+                env=env,
+                weights=effective_weights,
+            )
+
+            metrics = eval_res.metrics
+            scores = eval_res.scores
+
+            total_nm += metrics.distance_nm
+            total_hours += metrics.travel_time_hours
+            total_cost_acc += eval_res.total_cost
+
+            legs.append(
+                RouteLegResult(
+                    from_lat=round(p1[0], 4),
+                    from_lon=round(p1[1], 4),
+                    to_lat=round(p2[0], 4),
+                    to_lon=round(p2[1], 4),
+                    distance_nm=round(metrics.distance_nm, 2),
+                    travel_time_hours=round(metrics.travel_time_hours, 3),
+                    bearing=round(metrics.bearing, 1),
+                    cost=round(eval_res.total_cost, 4),
+                    wind_speed_kn=_opt_round(getattr(env, "wind_speed", None), 1),
+                    wind_direction_deg=_opt_round(getattr(env, "wind_direction", None), 0),
+                    wave_height_m=_opt_round(getattr(env, "wave_height", None), 2),
+                    wave_period_s=_opt_round(getattr(env, "wave_period", None), 1),
+                    current_speed_kn=_opt_round(getattr(env, "current_speed", None), 2),
+                    current_direction_deg=_opt_round(getattr(env, "current_direction", None), 0),
+                    relative_wind_dir=round(metrics.relative_wind_dir, 1),
+                    relative_current_dir=round(metrics.relative_current_dir, 1),
+                    along_track_current_kn=round(metrics.along_track_current, 3),
+                    effective_speed_kn=round(metrics.effective_speed, 2),
+                    time_score=round(scores.time_score, 4),
+                    fuel_score=round(scores.fuel_score, 4),
+                    wind_score=round(scores.wind_score, 4),
+                    wave_score=round(scores.wave_score, 4),
+                    current_score=round(scores.current_score, 4),
+                    safety_score=round(scores.safety_score, 4),
                 )
-            elif n1 and n2:
-                d = calculate_haversine_distance(n1.lat, n1.lon, n2.lat, n2.lon)
-                hours = d / max(effective_ship.cruising_speed, 1.0)
-                total_nm += d
-                total_hours += hours
-                # No evaluation available for this edge: emit geometry only
-                # rather than inventing environmental values.
-                legs.append(
-                    RouteLegResult(
-                        from_lat=round(n1.lat, 4),
-                        from_lon=round(n1.lon, 4),
-                        to_lat=round(n2.lat, 4),
-                        to_lon=round(n2.lon, 4),
-                        distance_nm=round(d, 2),
-                        travel_time_hours=round(hours, 3),
-                        bearing=0.0,
-                        cost=0.0,
-                    )
-                )
-
-        # 6b. Anchor the route to the caller's true endpoints.
-        #
-        # D* Lite operates on grid nodes, so `path` begins and ends at whichever
-        # nodes the requested coordinates snapped to — up to half a grid cell
-        # away. Returning that raw path means the drawn route floats away from
-        # the requested start/destination, and `distance_nm` silently omits both
-        # approach legs (measured at ~8 NM each on a 0.25 deg grid, against a
-        # 17 NM reported total).
-        #
-        # Prepending the true origin and appending the true destination makes the
-        # geometry and the distance describe the same voyage. Contract §8 also
-        # requires the tracked route to begin at the vessel's current position.
-        approach_speed = max(effective_ship.cruising_speed, 1.0)
-
-        if route_coords:
-            first = route_coords[0]
-            if not math_isclose_coords(start_lat, start_lon, first[0], first[1]):
-                lead_nm = calculate_haversine_distance(start_lat, start_lon, first[0], first[1])
-                route_coords.insert(0, (round(start_lat, 4), round(start_lon, 4)))
-                total_nm += lead_nm
-                total_hours += lead_nm / approach_speed
-
-            last = route_coords[-1]
-            if not math_isclose_coords(dest_lat, dest_lon, last[0], last[1]):
-                tail_nm = calculate_haversine_distance(last[0], last[1], dest_lat, dest_lon)
-                route_coords.append((round(dest_lat, 4), round(dest_lon, 4)))
-                total_nm += tail_nm
-                total_hours += tail_nm / approach_speed
+            )
 
         # 7. Compute ETA
         eta_dt = dep_dt + timedelta(hours=total_hours)
@@ -463,7 +503,7 @@ class RoutePlanningService:
             route=route_coords,
             distance_nm=round(total_nm, 2),
             estimated_time_hours=round(total_hours, 2),
-            total_cost=round(cost, 2),
+            total_cost=round(total_cost_acc, 2),
             departure_time=dep_iso,
             eta=eta_iso,
             legs=legs,
@@ -488,12 +528,38 @@ class RoutePlanningService:
         min_lon = min(start_lon, dest_lon)
         max_lon = max(start_lon, dest_lon)
 
+        # 1. Cross-peninsular Indian Ocean expansion:
+        # If the voyage is between Arabian Sea (West) and Bay of Bengal (East),
+        # the route must navigate around Cape Comorin and south/east of Sri Lanka.
+        is_cross = is_cross_peninsular_voyage(start_lat, start_lon, dest_lat, dest_lon)
+        if is_cross:
+            min_lat = min(min_lat, 5.0)   # South of Sri Lanka (Dondra Head at 5.9°N)
+            max_lon = max(max_lon, 83.0)  # East of Sri Lanka (Eastern tip at 81.9°E)
+            min_lon = min(min_lon, 72.0)  # West of Mumbai / Konkan approach
+
+        # 2. Gulf of Kutch / Gujarat expansion:
+        # Ships entering/exiting Gulf of Kutch (Mundra, Kandla, Mandvi) must round
+        # the western promontory of Saurashtra via Dwarka / Okha (68.90°E).
+        is_kutch = (
+            (start_lat >= 22.0 and 69.0 <= start_lon <= 70.8)
+            or (dest_lat >= 22.0 and 69.0 <= dest_lon <= 70.8)
+        )
+        if is_kutch:
+            min_lon = min(min_lon, 68.4)  # Open sea entrance west of Dwarka/Okha
+            max_lat = max(max_lat, 23.2)  # Northern Gulf of Kutch fairway
+
+        # 3. Persian Gulf / Strait of Hormuz expansion:
+        # Ships entering/exiting the Persian Gulf must pass through Strait of Hormuz (26.5°N).
+        is_gulf = (start_lon <= 56.5 and start_lat >= 24.0) or (dest_lon <= 56.5 and dest_lat >= 24.0)
+        if is_gulf:
+            max_lat = max(max_lat, 27.0)
+
         lat_span = max_lat - min_lat
         lon_span = max_lon - min_lon
 
-        # Margins: at least 0.20 deg (~12 NM) padding, or 25% of corridor span
-        margin_lat = max(0.20, lat_span * 0.25)
-        margin_lon = max(0.20, lon_span * 0.25)
+        # Margins: at least 0.30 deg (~18 NM) padding, or 15% of corridor span
+        margin_lat = max(0.30, lat_span * 0.15)
+        margin_lon = max(0.30, lon_span * 0.15)
 
         origin_lat = max(-90.0, min_lat - margin_lat)
         origin_lon = max(-180.0, min_lon - margin_lon)
@@ -503,10 +569,11 @@ class RoutePlanningService:
         total_lat = top_lat - origin_lat
         total_lon = right_lon - origin_lon
 
-        # Calculate rows and cols (min 4x4, max 15x15)
+        # Calculate rows and cols (allow up to 35 rows/cols for long corridors)
         res = self.grid_resolution_deg
-        rows = max(4, min(15, round(total_lat / res) + 1))
-        cols = max(4, min(15, round(total_lon / res) + 1))
+        max_dim = 35 if (is_cross or is_kutch or is_gulf) else 20
+        rows = max(6, min(max_dim, round(total_lat / res) + 1))
+        cols = max(6, min(max_dim, round(total_lon / res) + 1))
 
         lat_spacing = total_lat / max(rows - 1, 1)
         lon_spacing = total_lon / max(cols - 1, 1)
@@ -520,13 +587,35 @@ class RoutePlanningService:
             lon_spacing=lon_spacing,
         )
 
-        return GeographicGridGraph(
+        graph = GeographicGridGraph(
             config=config,
             cost_model=self.cost_model,
             default_ship=ship or self.ship_profile,
             default_weights=self.default_weights,
             environment_provider=self.environment_provider,
+            connectivity=8,
         )
+
+        # Apply Land Masking: mark all land nodes as non-navigable
+        for node in graph.get_all_nodes():
+            if is_point_on_land(node.lat, node.lon):
+                node.is_navigable = False
+
+        # Invalidate all edges connecting to land nodes or crossing landmasses
+        for (src, tgt), edge in graph._edges.items():
+            src_node = graph.get_node(src)
+            tgt_node = graph.get_node(tgt)
+            if (
+                not src_node
+                or not tgt_node
+                or not src_node.is_navigable
+                or not tgt_node.is_navigable
+                or is_segment_crossing_land(src_node.lat, src_node.lon, tgt_node.lat, tgt_node.lon)
+            ):
+                edge.is_navigable = False
+                edge.cost = math.inf
+
+        return graph
 
     def _find_nearest_node_id(
         self,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -102,7 +103,7 @@ class OpenMeteoWindProvider(WeatherProvider):
         self._cache: Dict[Tuple[float, float, str], Tuple[float, float]] = {}
 
     def _default_http_fetcher(self, url: str, timeout: float) -> Dict[str, Any]:
-        """Fetches JSON payload over HTTP using urllib.request with timeout and error handling."""
+        """Fetches JSON payload over HTTP using urllib.request with timeout, retry backoff, and error handling."""
         req = urllib.request.Request(
             url,
             headers={
@@ -110,22 +111,39 @@ class OpenMeteoWindProvider(WeatherProvider):
                 "Accept": "application/json",
             },
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                if response.status != 200:
-                    raise WindNetworkError(f"Open-Meteo returned non-200 HTTP status: {response.status}")
-                raw_data = response.read().decode("utf-8")
-                return json.loads(raw_data)
-        except urllib.error.HTTPError as http_err:
-            raise WindNetworkError(f"HTTP error ({http_err.code}) querying Open-Meteo: {http_err.reason}") from http_err
-        except urllib.error.URLError as url_err:
-            raise WindNetworkError(f"Network error communicating with Open-Meteo: {url_err.reason}") from url_err
-        except TimeoutError as to_err:
-            raise WindNetworkError(f"Timeout ({timeout}s) exceeded querying Open-Meteo.") from to_err
-        except json.JSONDecodeError as json_err:
-            raise WindResponseMalformedError(f"Invalid JSON payload returned by Open-Meteo: {json_err}") from json_err
-        except Exception as exc:
-            raise WindProviderError(f"Unexpected error during Open-Meteo request: {exc}") from exc
+        max_retries = 3
+        backoff_seconds = 1.0
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    if response.status != 200:
+                        raise WindNetworkError(f"Open-Meteo returned non-200 HTTP status: {response.status}")
+                    raw_data = response.read().decode("utf-8")
+                    return json.loads(raw_data)
+            except urllib.error.HTTPError as http_err:
+                if http_err.code in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    logger.warning(
+                        "Open-Meteo returned HTTP %d, retrying in %.1fs (attempt %d/%d)...",
+                        http_err.code,
+                        backoff_seconds,
+                        attempt,
+                        max_retries,
+                    )
+                    time.sleep(backoff_seconds)
+                    backoff_seconds *= 2.0
+                    continue
+                raise WindNetworkError(f"HTTP error ({http_err.code}) querying Open-Meteo: {http_err.reason}") from http_err
+            except (urllib.error.URLError, TimeoutError) as net_err:
+                if attempt < max_retries:
+                    time.sleep(backoff_seconds)
+                    backoff_seconds *= 2.0
+                    continue
+                raise WindNetworkError(f"Network error communicating with Open-Meteo: {net_err}") from net_err
+            except json.JSONDecodeError as json_err:
+                raise WindResponseMalformedError(f"Invalid JSON payload returned by Open-Meteo: {json_err}") from json_err
+            except Exception as exc:
+                raise WindProviderError(f"Unexpected error during Open-Meteo request: {exc}") from exc
 
     def _get_fetcher(self) -> Callable[[str, float], Dict[str, Any]]:
         """Returns the active HTTP fetcher (injected fetcher or default urllib fetcher)."""
@@ -151,6 +169,61 @@ class OpenMeteoWindProvider(WeatherProvider):
             raise WindDataUnavailableError(f"Could not locate matching timestamp for {target_dt.isoformat()}.")
 
         return best_index
+
+    def _parse_single_hourly_payload(
+        self,
+        payload: Dict[str, Any],
+        dt_utc: datetime,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """Parses wind speed (kn) and wind direction (deg) from one location's hourly payload."""
+        if not isinstance(payload, dict):
+            raise WindResponseMalformedError(f"Expected JSON dictionary payload, got {type(payload)}.")
+
+        if "error" in payload and payload["error"]:
+            reason = payload.get("reason", "Unknown Open-Meteo error")
+            raise WindDataUnavailableError(f"Open-Meteo API returned error: {reason}")
+
+        if "hourly" not in payload:
+            raise WindResponseMalformedError("Missing 'hourly' section in Open-Meteo response.")
+
+        hourly = payload["hourly"]
+        for required_key in ("time", "wind_speed_10m", "wind_direction_10m"):
+            if required_key not in hourly:
+                raise WindResponseMalformedError(f"Missing required hourly field '{required_key}' in response.")
+
+        time_list = hourly["time"]
+        speed_list = hourly["wind_speed_10m"]
+        direction_list = hourly["wind_direction_10m"]
+
+        if not time_list or not speed_list or not direction_list:
+            loc_str = f" for ({lat:.4f}N, {lon:.4f}E)" if lat is not None and lon is not None else ""
+            raise WindDataUnavailableError(f"Empty data arrays returned{loc_str}.")
+
+        idx = self._find_nearest_hourly_index(dt_utc, time_list)
+
+        raw_speed = speed_list[idx]
+        raw_direction = direction_list[idx]
+
+        if raw_speed is None or raw_direction is None or math.isnan(raw_speed) or math.isnan(raw_direction):
+            loc_str = f" for ({lat:.4f}N, {lon:.4f}E)" if lat is not None and lon is not None else ""
+            raise WindDataUnavailableError(f"Null or NaN wind values returned at index {idx}{loc_str}.")
+
+        hourly_units = payload.get("hourly_units", {})
+        speed_unit = hourly_units.get("wind_speed_10m", "kn").lower()
+
+        if speed_unit == "kn":
+            wind_speed_knots = float(raw_speed)
+        elif speed_unit in ("km/h", "kmh"):
+            wind_speed_knots = float(raw_speed) * KMH_TO_KNOTS
+        elif speed_unit in ("m/s", "ms"):
+            wind_speed_knots = float(raw_speed) * MS_TO_KNOTS
+        else:
+            wind_speed_knots = float(raw_speed)
+
+        wind_direction_deg = float(raw_direction) % 360.0
+        return (wind_speed_knots, wind_direction_deg)
 
     def fetch_wind(
         self,
@@ -194,59 +267,109 @@ class OpenMeteoWindProvider(WeatherProvider):
         fetcher = self._get_fetcher()
         payload = fetcher(query_url, self.timeout)
 
-        # Validate response payload structure
-        if not isinstance(payload, dict):
-            raise WindResponseMalformedError(f"Expected JSON dictionary payload, got {type(payload)}.")
-
-        if "error" in payload and payload["error"]:
-            reason = payload.get("reason", "Unknown Open-Meteo error")
-            raise WindDataUnavailableError(f"Open-Meteo API returned error: {reason}")
-
-        if "hourly" not in payload:
-            raise WindResponseMalformedError("Missing 'hourly' section in Open-Meteo response.")
-
-        hourly = payload["hourly"]
-        for required_key in ("time", "wind_speed_10m", "wind_direction_10m"):
-            if required_key not in hourly:
-                raise WindResponseMalformedError(f"Missing required hourly field '{required_key}' in response.")
-
-        time_list = hourly["time"]
-        speed_list = hourly["wind_speed_10m"]
-        direction_list = hourly["wind_direction_10m"]
-
-        if not time_list or not speed_list or not direction_list:
-            raise WindDataUnavailableError(f"Empty data arrays returned for coordinates ({lat:.4f}N, {lon:.4f}E).")
-
-        idx = self._find_nearest_hourly_index(dt_utc, time_list)
-
-        raw_speed = speed_list[idx]
-        raw_direction = direction_list[idx]
-
-        if raw_speed is None or raw_direction is None or math.isnan(raw_speed) or math.isnan(raw_direction):
-            raise WindDataUnavailableError(
-                f"Null or NaN wind values returned at index {idx} for ({lat:.4f}N, {lon:.4f}E)."
-            )
-
-        # Check units returned by API metadata
-        hourly_units = payload.get("hourly_units", {})
-        speed_unit = hourly_units.get("wind_speed_10m", "kn").lower()
-
-        if speed_unit == "kn":
-            wind_speed_knots = float(raw_speed)
-        elif speed_unit in ("km/h", "kmh"):
-            wind_speed_knots = float(raw_speed) * KMH_TO_KNOTS
-        elif speed_unit in ("m/s", "ms"):
-            wind_speed_knots = float(raw_speed) * MS_TO_KNOTS
-        else:
-            # Fallback to direct value if already in knots
-            wind_speed_knots = float(raw_speed)
-
-        wind_direction_deg = float(raw_direction) % 360.0
+        res = self._parse_single_hourly_payload(payload, dt_utc, lat=lat, lon=lon)
 
         if self.enable_cache:
-            self._cache[cache_key] = (wind_speed_knots, wind_direction_deg)
+            self._cache[cache_key] = res
 
-        return (wind_speed_knots, wind_direction_deg)
+        return res
+
+    def fetch_wind_batch(
+        self,
+        requests: Sequence[Any],
+    ) -> Dict[Any, Tuple[float, float]]:
+        """
+        Fetches wind speed and direction for multiple points using Open-Meteo's native
+        multi-location batch capability (comma-separated coordinates in 1 HTTP request).
+
+        Args:
+            requests: Sequence of ConditionRequest objects or objects with lat, lon, timestamp attributes.
+
+        Returns:
+            Dict mapping each request object to (wind_speed_knots, wind_direction_deg).
+        """
+        if not requests:
+            return {}
+
+        results: Dict[Any, Tuple[float, float]] = {}
+        uncached_reqs: List[Any] = []
+
+        # 1. Check cache first
+        for req in requests:
+            if not (-90.0 <= req.lat <= 90.0):
+                raise ValueError(f"Latitude {req.lat} is out of valid range [-90.0, 90.0].")
+            if not (-180.0 <= req.lon <= 180.0):
+                raise ValueError(f"Longitude {req.lon} is out of valid range [-180.0, 180.0].")
+
+            dt_utc = _normalize_utc_datetime(req.timestamp)
+            cache_key = (round(req.lat, 2), round(req.lon, 2), dt_utc.strftime("%Y-%m-%dT%H"))
+            if self.enable_cache and cache_key in self._cache:
+                results[req] = self._cache[cache_key]
+            else:
+                uncached_reqs.append(req)
+
+        if not uncached_reqs:
+            return results
+
+        # 2. Deduplicate unique cells to query
+        unique_cells: Dict[Tuple[float, float, str], Any] = {}
+        for req in uncached_reqs:
+            dt_utc = _normalize_utc_datetime(req.timestamp)
+            cell_key = (round(req.lat, 2), round(req.lon, 2), dt_utc.strftime("%Y-%m-%dT%H"))
+            if cell_key not in unique_cells:
+                unique_cells[cell_key] = req
+
+        unique_req_list = list(unique_cells.values())
+
+        # 3. Query in chunks of up to 50 locations per single HTTP request
+        chunk_size = 50
+        batch_parsed: Dict[Tuple[float, float, str], Tuple[float, float]] = {}
+
+        for i in range(0, len(unique_req_list), chunk_size):
+            chunk = unique_req_list[i : i + chunk_size]
+            lats_str = ",".join(f"{r.lat:.4f}" for r in chunk)
+            lons_str = ",".join(f"{r.lon:.4f}" for r in chunk)
+
+            params = {
+                "latitude": lats_str,
+                "longitude": lons_str,
+                "hourly": "wind_speed_10m,wind_direction_10m",
+                "wind_speed_unit": "kn",
+                "timezone": "UTC",
+            }
+            query_url = f"{self.api_url}?{urllib.parse.urlencode(params)}"
+            fetcher = self._get_fetcher()
+            payload = fetcher(query_url, self.timeout)
+
+            # When len(chunk) == 1, payload is a single dict; when len(chunk) > 1, payload is list[dict]
+            if isinstance(payload, list):
+                payload_list = payload
+            elif isinstance(payload, dict):
+                payload_list = [payload]
+            else:
+                raise WindResponseMalformedError(f"Expected dict or list from Open-Meteo, got {type(payload)}.")
+
+            for r, loc_payload in zip(chunk, payload_list):
+                dt_utc = _normalize_utc_datetime(r.timestamp)
+                cell_key = (round(r.lat, 2), round(r.lon, 2), dt_utc.strftime("%Y-%m-%dT%H"))
+                parsed = self._parse_single_hourly_payload(loc_payload, dt_utc, lat=r.lat, lon=r.lon)
+                batch_parsed[cell_key] = parsed
+                if self.enable_cache:
+                    self._cache[cell_key] = parsed
+
+        # 4. Populate results for all uncached requests
+        for req in uncached_reqs:
+            dt_utc = _normalize_utc_datetime(req.timestamp)
+            cell_key = (round(req.lat, 2), round(req.lon, 2), dt_utc.strftime("%Y-%m-%dT%H"))
+            if cell_key in batch_parsed:
+                results[req] = batch_parsed[cell_key]
+            elif cell_key in self._cache:
+                results[req] = self._cache[cell_key]
+            else:
+                # Fallback to single fetch
+                results[req] = self.fetch_wind(lat=req.lat, lon=req.lon, timestamp=req.timestamp)
+
+        return results
 
     def fetch_conditions(
         self,
