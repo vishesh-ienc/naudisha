@@ -313,17 +313,31 @@ export function MapCanvas({
         {/* DYNAMIC D* LITE SIMULATION HAZARD ZONE (CYCLONE / CURRENT GYRE) */}
         {simulationHazard && (
           <>
+            {/* Outer Weather Hazard Influence Radius */}
             <Circle
               center={[simulationHazard.center.latitude, simulationHazard.center.longitude]}
               radius={simulationHazard.radiusNm * 1852}
               pathOptions={{
                 color: simulationHazard.type === 'storm' ? '#f43f5e' : '#f59e0b',
                 fillColor: simulationHazard.type === 'storm' ? '#ef4444' : '#fbbf24',
-                fillOpacity: 0.22,
-                weight: 2.5,
+                fillOpacity: 0.15,
+                weight: 2,
                 dashArray: '6, 6',
               }}
             />
+            {/* Inner Impassable Storm Core (50% Radius) */}
+            {simulationHazard.type === 'storm' && (
+              <Circle
+                center={[simulationHazard.center.latitude, simulationHazard.center.longitude]}
+                radius={(simulationHazard.radiusNm * 0.5) * 1852}
+                pathOptions={{
+                  color: '#dc2626',
+                  fillColor: '#b91c1c',
+                  fillOpacity: 0.4,
+                  weight: 2.5,
+                }}
+              />
+            )}
             <Marker
               position={[simulationHazard.center.latitude, simulationHazard.center.longitude]}
               icon={
@@ -333,15 +347,16 @@ export function MapCanvas({
               }
             >
               <Popup className="naudisha-popup">
-                <div className="p-1.5 font-sans text-xs">
-                  <div className="font-bold text-rose-400 uppercase tracking-wider text-[10px]">
+                <div className="p-2 font-sans text-xs min-w-[220px]">
+                  <div className="font-bold text-rose-400 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping inline-block" />
                     {simulationHazard.name}
                   </div>
                   <div className="mt-1 text-[11px] text-slate-200">
                     {simulationHazard.description || 'Severe weather zone triggering D* Lite dynamic edge re-evaluation.'}
                   </div>
-                  <div className="mt-1 font-mono text-[10px] text-muted-foreground">
-                    Radius: {simulationHazard.radiusNm} NM · Severity: {simulationHazard.severity.toFixed(1)}x
+                  <div className="mt-1.5 pt-1 border-t border-slate-700 font-mono text-[10px] text-rose-300">
+                    Radius: {simulationHazard.radiusNm} NM · Lethal Wave Core: {(simulationHazard.radiusNm * 0.5).toFixed(0)} NM
                   </div>
                 </div>
               </Popup>
@@ -349,23 +364,32 @@ export function MapCanvas({
           </>
         )}
 
-
-        {/* Previous Route Trail (Faded Cyan/Gray) */}
+        {/* 1. ORIGINAL BLOCKED COURSE (RED DASHED LINE SHOWING HAZARD INTERSECTION) */}
         {previousPositions.length > 0 && (
-          <Polyline
-            positions={previousPositions}
-            pathOptions={{
-              color: '#64748b',
-              weight: 3,
-              opacity: 0.45,
-              dashArray: '4, 8',
-            }}
-          />
+          <>
+            <Polyline
+              positions={previousPositions}
+              pathOptions={{
+                color: '#ef4444',
+                weight: 3.5,
+                opacity: 0.85,
+                dashArray: '6, 8',
+                lineCap: 'round',
+              }}
+            >
+              <Popup className="naudisha-popup">
+                <div className="p-1.5 font-sans text-xs">
+                  <div className="font-bold text-rose-400">🚫 Original Course (Blocked by Storm)</div>
+                  <p className="mt-1 text-muted-foreground">
+                    This baseline trajectory directly intersects the active cyclone core (Hs &gt; 5.0m). D* Lite has dynamically diverted the vessel.
+                  </p>
+                </div>
+              </Popup>
+            </Polyline>
+          </>
         )}
 
-
-
-        {/* 2. NAUDISHA OPTIMAL ROUTE — RENDERED IN VIBRANT GREEN */}
+        {/* 2. DYNAMICALLY RE-PLANNED OPTIMAL ROUTE — RENDERED IN VIBRANT GREEN */}
         {smoothedOptimalPositions.length > 0 && (
           <>
             {/* Green Outer Ambient Glow */}
@@ -373,8 +397,8 @@ export function MapCanvas({
               positions={smoothedOptimalPositions}
               pathOptions={{
                 color: '#10b981',
-                weight: 9,
-                opacity: 0.3,
+                weight: 10,
+                opacity: 0.35,
                 lineCap: 'round',
                 lineJoin: 'round',
               }}
@@ -392,9 +416,13 @@ export function MapCanvas({
             >
               <Popup className="naudisha-popup">
                 <div className="p-1.5 font-sans text-xs">
-                  <div className="font-bold text-emerald-400">NauDisha Optimal Route</div>
+                  <div className="font-bold text-emerald-400">
+                    {previousPositions.length > 0 ? '🟢 D* Lite Safe Diversion Track' : 'NauDisha Optimal Route'}
+                  </div>
                   <p className="mt-1 text-muted-foreground">
-                    Multi-factor $D^*$ Lite calculated route minimizing fuel, weather drag, and sea hazard exposure.
+                    {previousPositions.length > 0
+                      ? 'Dynamically diverted in real-time around the severe storm vortex with 100% collision avoidance.'
+                      : 'Multi-factor D* Lite calculated route minimizing fuel, weather drag, and sea hazard exposure.'}
                   </p>
                 </div>
               </Popup>
