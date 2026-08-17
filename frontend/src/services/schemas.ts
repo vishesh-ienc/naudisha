@@ -93,6 +93,8 @@ export const routePreviewResponseSchema = z.object({
   distance_nm: z.number().nonnegative(),
   estimated_time_hours: z.number().nonnegative(),
   total_cost: z.number(),
+  optimization_objective: z.string().nullable().optional(),
+  cost_weights: z.record(z.string(), z.number()).nullable().optional(),
   legs: z.array(routeLegSchema).optional(),
 })
 

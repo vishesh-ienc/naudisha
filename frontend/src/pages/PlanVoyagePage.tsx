@@ -25,15 +25,19 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { PortSearchInput } from '@/components/route/PortSearchInput'
 import { VesselTypeSelect } from '@/components/ship/VesselTypeSelect'
+import { ObjectiveSelector } from '@/components/route/ObjectiveSelector'
 import { CalculationConsole } from '@/components/route/CalculationConsole'
 import { MapCanvas } from '@/map/MapCanvas'
 import { useRoutePlan } from '@/hooks/useRoutePlan'
 import { STANDARD_VESSEL_TYPES, vesselToParticulars, type StandardVesselType } from '@/lib/vessels'
-import type { Coordinate } from '@/types/api'
+import type { Coordinate, OptimizationObjective } from '@/types/api'
 import { haversineNm } from '@/lib/geo'
 import { toDatetimeLocalValue } from '@/lib/format'
 
 export function PlanVoyagePage() {
+  // 0. Optimization Objective (Defaults to Balanced)
+  const [objective, setObjective] = useState<OptimizationObjective>('balanced')
+
   // 1. Origin & Destination Locations
   const [originCoord, setOriginCoord] = useState<Coordinate | null>(null)
   const [destCoord, setDestCoord] = useState<Coordinate | null>(null)
@@ -61,8 +65,9 @@ export function PlanVoyagePage() {
       destination: destCoord,
       departure_time: new Date(departure).toISOString(),
       ship: shipParticulars,
+      optimization_objective: objective,
     })
-  }, [originCoord, destCoord, selectedVessel, departure, plan])
+  }, [originCoord, destCoord, selectedVessel, departure, objective, plan])
 
   const isPlanning = phase === 'submitting' || phase === 'planning'
   const canPlan = originCoord && destCoord && haversineNm(originCoord, destCoord) > 1
@@ -141,6 +146,15 @@ export function PlanVoyagePage() {
               description="Enter departure port, destination, and vessel profile"
             />
             <CardBody className="space-y-4">
+              {/* Step 0: Objective Selector */}
+              <ObjectiveSelector
+                value={objective}
+                onChange={setObjective}
+                disabled={isPlanning}
+              />
+
+              <div className="border-t border-[var(--border)] pt-1" />
+
               {/* Step 1: Origin Port */}
               <PortSearchInput
                 label="1. Origin Port"

@@ -133,6 +133,16 @@ class RoutePreviewRequest(BaseModel):
         None,
         description="Optional vessel characteristics to use for routing cost calculations",
     )
+    optimization_objective: Optional[str] = Field(
+        "balanced",
+        description=(
+            "Voyage optimization objective: one of 'fuel_efficiency', 'fastest', 'safety', 'balanced'. "
+            "Controls the D* Lite cost weighting used to find the optimal route. Default: 'balanced'."
+        ),
+        examples=["balanced", "fuel_efficiency", "fastest", "safety"],
+    )
+
+    _VALID_OBJECTIVES = frozenset({"fuel_efficiency", "fastest", "safety", "balanced"})
 
     @field_validator("imo_number")
     @classmethod
@@ -153,6 +163,19 @@ class RoutePreviewRequest(BaseModel):
             datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
         except Exception as exc:
             raise ValueError(f"Invalid ISO 8601 UTC departure_time format: {cleaned}") from exc
+        return cleaned
+
+    @field_validator("optimization_objective")
+    @classmethod
+    def validate_objective(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return "balanced"
+        cleaned = v.strip().lower()
+        valid = {"fuel_efficiency", "fastest", "safety", "balanced"}
+        if cleaned not in valid:
+            raise ValueError(
+                f"optimization_objective must be one of {sorted(valid)}, got: '{v}'"
+            )
         return cleaned
 
     @model_validator(mode="after")
@@ -220,6 +243,17 @@ class RoutePreviewResponse(BaseModel):
     distance_nm: float = Field(..., description="Total route distance in nautical miles")
     estimated_time_hours: float = Field(..., description="Estimated voyage transit duration in hours")
     total_cost: float = Field(..., description="Total multi-objective environmental route cost")
+    optimization_objective: Optional[str] = Field(
+        None,
+        description="The optimization objective used for this calculation (echoed from request)",
+    )
+    cost_weights: Optional[Dict[str, float]] = Field(
+        None,
+        description=(
+            "Actual D* Lite cost weights used for this calculation, keyed by dimension. "
+            "Frontend uses these to display an honest weight breakdown."
+        ),
+    )
     legs: List[RouteLegSchema] = Field(
         default_factory=list,
         description="Per-segment environmental and cost breakdown explaining the route choice",

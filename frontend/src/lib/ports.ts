@@ -434,6 +434,82 @@ export const NAMED_LOCATIONS: NamedLocation[] = [
   },
 
   // ==========================================
+  // EAST AFRICA & WESTERN INDIAN OCEAN
+  // ==========================================
+  {
+    id: 'ke-mba-01',
+    name: 'Mombasa Port (Kilindini Harbour Approach)',
+    country: 'Kenya',
+    region: 'East Africa / Indian Ocean',
+    unLocode: 'KEMBA',
+    kind: 'port',
+    coordinate: { latitude: -4.07, longitude: 39.67 },
+  },
+  {
+    id: 'tz-dar-01',
+    name: 'Dar es Salaam Port Outer Fairway',
+    country: 'Tanzania',
+    region: 'East Africa / Indian Ocean',
+    unLocode: 'TZDAR',
+    kind: 'port',
+    coordinate: { latitude: -6.82, longitude: 39.31 },
+  },
+  {
+    id: 'mu-plu-01',
+    name: 'Port Louis Harbour Fairway',
+    country: 'Mauritius',
+    region: 'Western Indian Ocean',
+    unLocode: 'MUPLU',
+    kind: 'port',
+    coordinate: { latitude: -20.15, longitude: 57.48 },
+  },
+  {
+    id: 'sc-pov-01',
+    name: 'Port Victoria (Mahé Fairway)',
+    country: 'Seychelles',
+    region: 'Western Indian Ocean',
+    unLocode: 'SCPOV',
+    kind: 'port',
+    coordinate: { latitude: -4.62, longitude: 55.47 },
+  },
+  {
+    id: 'mg-toa-01',
+    name: 'Toamasina (Tamatave) Port Fairway',
+    country: 'Madagascar',
+    region: 'Western Indian Ocean',
+    unLocode: 'MGTMM',
+    kind: 'port',
+    coordinate: { latitude: -18.15, longitude: 49.43 },
+  },
+  {
+    id: 'mz-mpm-01',
+    name: 'Maputo Port Seaward Channel',
+    country: 'Mozambique',
+    region: 'Southern Africa / Indian Ocean',
+    unLocode: 'MZMPM',
+    kind: 'port',
+    coordinate: { latitude: -25.97, longitude: 32.58 },
+  },
+  {
+    id: 'za-dur-01',
+    name: 'Port of Durban Outer Anchorage / Fairway',
+    country: 'South Africa',
+    region: 'Indian Ocean / South Africa',
+    unLocode: 'ZADUR',
+    kind: 'port',
+    coordinate: { latitude: -29.87, longitude: 31.05 },
+  },
+  {
+    id: 'za-rcb-01',
+    name: 'Richards Bay Deepwater Coal Terminal Fairway',
+    country: 'South Africa',
+    region: 'Indian Ocean / South Africa',
+    unLocode: 'ZARCB',
+    kind: 'port',
+    coordinate: { latitude: -28.80, longitude: 32.09 },
+  },
+
+  // ==========================================
   // SOUTHEAST ASIA & EAST ASIA
   // ==========================================
   {

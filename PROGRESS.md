@@ -208,34 +208,22 @@ All endpoints conform strictly to [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.m
 * 162 deterministic unit tests passing 100% offline.
 * Merged and pushed clean state to `main`.
 
----
-
-## 🔮 6. Remaining Scope to Full Production
-
-To complete the full end-to-end production experience, the following items remain:
-
-### 1. Frontend Web Dashboard Integration (`frontend/`)
-* **React / Next.js / Vite UI**: Build the interactive Leaflet/MapLibre map interface.
-* **Vessel Lookup Screen**: Connect `POST /api/ships` to display vessel specs and current AIS location.
-* **Interactive Waypoint Selector**: Allow maritime navigators to click origin/destination ports and configure cost weights (Fuel vs. Time vs. Safety).
-* **Live Route Visualizer**: Render the calculated D* Lite trajectory with color-coded environmental risk segments (waves, current vectors).
-
-### 2. Live Bathymetric Depth Masking (GEBCO / EMODnet)
-* Ingest global bathymetric depth grids so the graph automatically marks cells shallower than the ship's `draft_m` as non-navigable (`math.inf`).
-
-### 3. Continuous WebSocket Navigation Simulator
-* Connect the active tracking session (`/ws/ships/{imo_number}`) to a real-time stepping clock that simulates vessel progress along the route and triggers live D* Lite replans when weather forecasts change mid-voyage.
-
-### 4. Containerization & Production Deployment
-* Add `backend/Dockerfile` and `docker-compose.yml` for single-command production deployment on cloud infrastructure (Render, Railway, or AWS).
+### Phase 14 — Objective-Driven Indian Ocean Route Optimization
+* Evolved Plan Voyage into an objective-driven planning engine with 4 optimization presets: **Fuel Efficiency**, **Fastest Voyage**, **Safety & Weather**, and **Balanced Route**.
+* Implemented `objective_to_weights` in `backend/naudisha/api/services.py` with mathematically calibrated weights and strict safety floor invariant ($\ge 1.0$).
+* Extended `RoutePreviewRequest` and `RoutePreviewResponse` with `optimization_objective` and `cost_weights`.
+* Updated `PlanningManager.signature()` cache key to segregate cached routes by objective.
+* Created interactive `ObjectiveSelector` UI component with real-time feedback and dynamic descriptions.
+* Added truthful D* Lite Cost Engine Weight Distribution panel in `CalculationConsole` with proportional stacked bar chart and dimension percentages.
+* Expanded port database with major East Africa and Western Indian Ocean shipping hubs (Mombasa, Dar es Salaam, Port Louis, Victoria, Toamasina, Maputo, Durban, Richards Bay).
 
 ---
 
 ## 🧪 7. Test Suite Status
 
 ```text
-Ran 162 tests in 2.877s
-OK (162 passed, 0 failed, 0 errors)
+Ran 227 tests in 3.211s
+OK (227 passed, 0 failed, 0 errors)
 ```
-* **Coverage:** Nautical math, cost scoring, grid graph, D* Lite pathfinding, CMEMS schemas, wind providers, universal vessel lookup, live AIS manager, and REST/WebSocket API endpoints.
+* **Coverage:** Nautical math, cost scoring, objective weighting, grid graph, D* Lite pathfinding, CMEMS schemas, wind providers, universal vessel lookup, live AIS manager, asynchronous planning jobs, and REST/WebSocket API endpoints.
 * **Determinism:** 100% offline reproducible with zero unmocked network dependencies during test execution.

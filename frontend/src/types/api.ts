@@ -65,12 +65,15 @@ export interface ShipResponse {
 // §5 Route preview + per-leg breakdown
 // ---------------------------------------------------------------------------
 
+export type OptimizationObjective = 'fuel_efficiency' | 'fastest' | 'safety' | 'balanced'
+
 export interface RoutePreviewRequest {
   imo_number?: ImoNumber | null
   start: Coordinate
   destination: Coordinate
   departure_time?: IsoTimestamp
   ship?: ShipProfile | ShipParticulars
+  optimization_objective?: OptimizationObjective | string
 }
 
 /**
@@ -116,6 +119,8 @@ export interface RoutePreviewResponse {
   total_cost: number
   baseline_cost?: number | null
   efficiency_gain_percent?: number | null
+  optimization_objective?: string | null
+  cost_weights?: Record<string, number> | null
   legs?: RouteLeg[]
 }
 
@@ -186,6 +191,8 @@ export interface CurrentRouteResponse {
   destination?: Coordinate | null
   baseline_cost?: number | null
   efficiency_gain_percent?: number | null
+  optimization_objective?: string | null
+  cost_weights?: Record<string, number> | null
   legs?: RouteLeg[]
 }
 

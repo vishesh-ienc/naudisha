@@ -247,15 +247,79 @@ export function CalculationConsole({
                   </div>
                 </div>
                 <div className="rounded-xl border border-[var(--border)]/60 bg-secondary/20 p-3 text-center">
-                  <div className="text-[10px] text-muted-foreground uppercase font-bold tracking-wider">Algorithm</div>
-                  <div className="mt-1 text-sm font-bold text-foreground">D* Lite</div>
-                  <div className="font-mono text-[10px] text-muted-foreground">{shipName ?? 'Vessel'}</div>
+                  <div className="text-[10px] text-muted-foreground uppercase font-bold tracking-wider">Objective</div>
+                  <div className="mt-1 text-sm font-bold text-foreground capitalize">
+                    {(route.optimization_objective ?? 'Balanced').replace('_', ' ')}
+                  </div>
+                  <div className="font-mono text-[10px] text-cyan-400 truncate" title={shipName ?? 'D* Lite Active'}>
+                    {shipName ? `${shipName} · D* Lite` : 'D* Lite Active'}
+                  </div>
                 </div>
               </div>
 
+              {/* Voyage Objective & Cost Weight Distribution */}
+              {route.cost_weights && (
+                <div className="mb-5 rounded-xl border border-[var(--border)] bg-card/80 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <div className="text-[10px] uppercase tracking-widest text-muted-foreground font-bold">
+                      D* Lite Cost Engine Weight Distribution ({((route.optimization_objective ?? 'balanced').replace('_', ' ')).toUpperCase()})
+                    </div>
+                    <span className="text-[10px] font-mono text-cyan-400/90">
+                      Truthful Backend Cost Weights
+                    </span>
+                  </div>
+
+                  {(() => {
+                    const w = route.cost_weights!
+                    const sum = (w.time || 0) + (w.fuel || 0) + (w.wind || 0) + (w.wave || 0) + (w.current || 0) + (w.safety || 0) || 1
+                    const factors = [
+                      { label: 'Fuel', weight: w.fuel || 0, color: 'bg-amber-500', text: 'text-amber-400' },
+                      { label: 'Time', weight: w.time || 0, color: 'bg-sky-500', text: 'text-sky-400' },
+                      { label: 'Safety', weight: w.safety || 0, color: 'bg-rose-500', text: 'text-rose-400' },
+                      { label: 'Current', weight: w.current || 0, color: 'bg-emerald-500', text: 'text-emerald-400' },
+                      { label: 'Wave', weight: w.wave || 0, color: 'bg-blue-500', text: 'text-blue-400' },
+                      { label: 'Wind', weight: w.wind || 0, color: 'bg-cyan-500', text: 'text-cyan-400' },
+                    ]
+
+                    return (
+                      <div className="space-y-2">
+                        {/* Stacked Proportional Bar */}
+                        <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-secondary/50">
+                          {factors.map((f) => {
+                            const pct = (f.weight / sum) * 100
+                            return (
+                              <div
+                                key={f.label}
+                                className={`${f.color} transition-all duration-500`}
+                                style={{ width: `${pct}%` }}
+                                title={`${f.label}: ${f.weight.toFixed(1)} (${Math.round(pct)}%)`}
+                              />
+                            )
+                          })}
+                        </div>
+
+                        {/* Individual Factor Breakdown Chips */}
+                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 pt-1 font-mono text-[11px]">
+                          {factors.map((f) => {
+                            const pct = Math.round((f.weight / sum) * 100)
+                            return (
+                              <div key={f.label} className="rounded-lg border border-[var(--border)]/40 bg-secondary/15 px-2 py-1.5 text-center">
+                                <div className="text-[10px] text-muted-foreground">{f.label}</div>
+                                <div className={`font-bold ${f.text}`}>{pct}%</div>
+                                <div className="text-[9px] text-muted-foreground/70">{f.weight.toFixed(1)}w</div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+
               {/* 6-Factor Breakdown */}
               <div className="mb-4 text-[10px] uppercase tracking-widest text-muted-foreground font-bold">
-                6-Factor Cost Breakdown
+                6-Factor Route Cost Scores (Normalized [0.0 - 1.0])
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {costDimensions.map((dim) => (

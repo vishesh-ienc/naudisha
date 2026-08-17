@@ -84,6 +84,7 @@ export function previewRoute(
   if (payload.imo_number) body.imo_number = payload.imo_number
   if (payload.departure_time) body.departure_time = payload.departure_time
   if (payload.ship) body.ship = payload.ship
+  if (payload.optimization_objective) body.optimization_objective = payload.optimization_objective
 
   return request(ENDPOINTS.routePreview, routePreviewResponseSchema, {
     method: 'POST',
@@ -174,6 +175,7 @@ export function submitRoutePlan(
   if (payload.imo_number) body.imo_number = payload.imo_number
   if (payload.departure_time) body.departure_time = payload.departure_time
   if (payload.ship) body.ship = payload.ship
+  if (payload.optimization_objective) body.optimization_objective = payload.optimization_objective
 
   return request(ENDPOINTS.routePlan, planJobResponseSchema, {
     method: 'POST',

@@ -168,6 +168,7 @@ def preview_route(
         dest_lon=request.destination.longitude,
         timestamp=request.departure_time,
         ship_profile=ship_profile,
+        optimization_objective=request.optimization_objective,
     )
 
     route_coords = [
@@ -189,6 +190,8 @@ def _to_preview_response(result) -> RoutePreviewResponse:
         distance_nm=result.distance_nm,
         estimated_time_hours=result.estimated_time_hours,
         total_cost=result.total_cost,
+        optimization_objective=getattr(result, "optimization_objective", None),
+        cost_weights=getattr(result, "cost_weights", None),
         legs=[
             RouteLegSchema(
                 **{"from": Coordinate(latitude=leg.from_lat, longitude=leg.from_lon)},
@@ -246,6 +249,7 @@ def submit_route_plan(
         start=(request.start.latitude, request.start.longitude),
         destination=(request.destination.latitude, request.destination.longitude),
         departure_time=request.departure_time,
+        optimization_objective=request.optimization_objective,
     )
 
     job = planning_manager.submit(
@@ -262,6 +266,7 @@ def submit_route_plan(
         dest_lon=request.destination.longitude,
         timestamp=request.departure_time,
         ship_profile=ship_profile,
+        optimization_objective=request.optimization_objective,
     )
 
     return _job_to_response(job)

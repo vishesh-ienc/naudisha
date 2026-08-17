@@ -5,13 +5,13 @@ export interface SampleVessel {
 }
 
 /**
- * Verified sample vessels from the backend catalogue (all pass ISO 8713 check digit).
+ * Verified sample vessels (all pass ISO 8713 check digit), including actively transmitting live AIS vessels.
  */
 export const SAMPLE_IMO_NUMBERS: SampleVessel[] = [
+  { imo: '9498822', name: 'Heide', type: 'Commercial Cargo Vessel (AIS Live)' },
+  { imo: '9181156', name: 'Baltic Jasmine', type: 'Reefer Vessel (AIS Live)' },
+  { imo: '9785433', name: 'General Cargo', type: 'Cargo Carrier (AIS Live)' },
   { imo: '9811000', name: 'Ever Given', type: 'Container Vessel (Golden-Class)' },
-  { imo: '9321483', name: 'Emma Maersk', type: 'Container Vessel (E-Class)' },
-  { imo: '9383637', name: 'EVALI', type: 'Chemical/Oil Products Tanker' },
-  { imo: '9447536', name: 'Berge Everest', type: 'Very Large Ore Carrier (Valemax)' },
 ]
 
 /**

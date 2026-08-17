@@ -84,15 +84,18 @@ class PlanningManager:
         start: Tuple[float, float],
         destination: Tuple[float, float],
         departure_time: Optional[str],
+        optimization_objective: Optional[str] = "balanced",
     ) -> Tuple:
         """
         Normalised cache key.
 
-        Coordinates are rounded to ~1 km and the departure time to the hour,
+        Coordinates are rounded to ~1 km, the departure time to the hour,
+        and optimization objective is normalized,
         matching the resolution at which the environmental providers themselves
         cache. Finer keys would miss constantly for no gain in accuracy.
         """
         hour = (departure_time or "")[:13]
+        objective = (optimization_objective or "balanced").strip().lower()
         return (
             imo_number or "",
             round(start[0], 2),
@@ -100,6 +103,7 @@ class PlanningManager:
             round(destination[0], 2),
             round(destination[1], 2),
             hour,
+            objective,
         )
 
     def cached_result(self, signature: Tuple) -> Optional[RoutePlanResult]:

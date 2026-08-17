@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from naudisha.core.calculations import calculate_haversine_distance
 from naudisha.core.models import (
@@ -98,6 +98,70 @@ class RoutePlanResult:
     departure_time: str  # ISO-8601 UTC timestamp string
     eta: str             # ISO-8601 UTC timestamp string
     legs: List[RouteLegResult] = field(default_factory=list)
+    optimization_objective: str = "balanced"
+    cost_weights: Dict[str, float] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Objective → Cost Weights mapping
+# ---------------------------------------------------------------------------
+
+_OBJECTIVE_WEIGHTS: Dict[str, CostWeights] = {
+    # Balanced: equal emphasis across all dimensions with elevated safety.
+    # This is the production default and the most conservative option.
+    "balanced": CostWeights(
+        time=1.5, fuel=1.2, wind=1.0, wave=1.0, current=0.8, safety=2.0
+    ),
+    # Fuel efficiency: heavily prioritises propulsion cost minimisation.
+    # Current assistance weighted up (it directly reduces fuel burn).
+    # Safety remains a meaningful penalty — never suppressed.
+    "fuel_efficiency": CostWeights(
+        time=1.0, fuel=3.0, wind=1.2, wave=1.0, current=1.2, safety=2.0
+    ),
+    # Fastest: travel time is the primary driver.
+    # Current assistance weighted up (it increases SOG).
+    # Fuel and wave de-prioritised — but safety constraint is still 2.0.
+    "fastest": CostWeights(
+        time=3.5, fuel=0.8, wind=1.0, wave=0.8, current=1.5, safety=2.0
+    ),
+    # Safety / weather routing: heavily penalises wave and wind exposure.
+    # Safety weight at maximum to avoid storm-track routes.
+    # Time and fuel largely sacrificed for sea-state comfort.
+    "safety": CostWeights(
+        time=0.8, fuel=0.8, wind=2.5, wave=3.0, current=1.0, safety=3.5
+    ),
+}
+
+
+def objective_to_weights(objective: Optional[str]) -> CostWeights:
+    """
+    Resolves an optimization objective string to a CostWeights instance.
+
+    Safety is guaranteed >= 1.0 for every objective:
+    the cost model additionally enforces absolute survival constraints
+    (wave/wind hard limits) independently of these weights.
+
+    Args:
+        objective: One of 'fuel_efficiency', 'fastest', 'safety', 'balanced'.
+                   Defaults to 'balanced' when None or unrecognised.
+
+    Returns:
+        CostWeights instance appropriate for the D* Lite cost model.
+    """
+    key = (objective or "balanced").strip().lower()
+    return _OBJECTIVE_WEIGHTS.get(key, _OBJECTIVE_WEIGHTS["balanced"])
+
+
+def _weights_to_dict(w: CostWeights) -> Dict[str, float]:
+    """Converts a CostWeights instance to a plain dict for API serialisation."""
+    return {
+        "time": w.time,
+        "fuel": w.fuel,
+        "wind": w.wind,
+        "wave": w.wave,
+        "current": w.current,
+        "safety": w.safety,
+    }
 
 
 class RoutePlanningService:
@@ -160,6 +224,7 @@ class RoutePlanningService:
         dest_lon: float,
         timestamp: Optional[Union[datetime, str]] = None,
         ship_profile: Optional[ShipProfile] = None,
+        optimization_objective: Optional[str] = None,
     ) -> RoutePlanResult:
         """
         Calculates an optimal route between start and destination coordinates.
@@ -190,6 +255,11 @@ class RoutePlanningService:
         # Effective ship profile
         effective_ship = ship_profile or self.ship_profile
 
+        # Effective optimization objective & weights
+        effective_objective = (optimization_objective or "balanced").strip().lower()
+        effective_weights = objective_to_weights(effective_objective)
+        weights_dict = _weights_to_dict(effective_weights)
+
         # Effective departure time (defaults to real current UTC time)
         if timestamp is None:
             dep_dt = datetime.now(timezone.utc)
@@ -213,6 +283,8 @@ class RoutePlanningService:
                 total_cost=0.0,
                 departure_time=dep_iso,
                 eta=dep_iso,
+                optimization_objective=effective_objective,
+                cost_weights=weights_dict,
             )
 
         # 2. Build or retrieve graph covering voyage corridor
@@ -228,7 +300,7 @@ class RoutePlanningService:
                     timestamp=dep_iso,
                     provider=self.environment_provider,
                     ship=effective_ship,
-                    weights=self.default_weights,
+                    weights=effective_weights,
                 )
             except GridEnvironmentUpdateError as exc:
                 logger.error("Environmental update failed: %s", exc)
@@ -251,7 +323,7 @@ class RoutePlanningService:
             graph.populate_uniform_environment(
                 env=baseline_env,
                 ship=effective_ship,
-                weights=self.default_weights,
+                weights=effective_weights,
             )
 
         # 4. Map start and destination to grid nodes
@@ -395,6 +467,8 @@ class RoutePlanningService:
             departure_time=dep_iso,
             eta=eta_iso,
             legs=legs,
+            optimization_objective=effective_objective,
+            cost_weights=weights_dict,
         )
 
     def _build_bounding_grid(
