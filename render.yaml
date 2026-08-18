@@ -1,0 +1,13 @@
+# Render Blueprint Specification for NauDisha Full-Stack Application
+services:
+  - type: web
+    name: naudisha-app
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: singapore
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: COPERNICUS_LIVE
+        value: "0"
