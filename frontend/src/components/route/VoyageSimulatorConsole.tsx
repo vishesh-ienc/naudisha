@@ -90,22 +90,16 @@ export function VoyageSimulatorConsole({
   const handleInjectHazard = async (type: 'storm' | 'current' | 'restricted') => {
     if (routeRef.current.length < 2) return
 
-    // Position hazard on the upcoming track segment ahead of the vessel (15-25 NM ahead)
-    let accumDist = 0
-    let forwardPt = routeRef.current[Math.min(currentWaypointIdx + 1, routeRef.current.length - 1)] || currentPosition
-    for (let i = currentWaypointIdx; i < routeRef.current.length - 1; i++) {
-      const pA = i === currentWaypointIdx ? currentPosition : routeRef.current[i]!
-      const pB = routeRef.current[i + 1]!
-      accumDist += haversineNm(pA, pB)
-      if (accumDist >= 15 || i === routeRef.current.length - 2) {
-        forwardPt = routeRef.current[i + 1]!
-        break
-      }
-    }
-
+    // Position hazard circle 16 NM directly ahead of vessel along current heading
+    const headingRad = (currentHeading * Math.PI) / 180.0
+    const nmPerDegreeLat = 60.0
+    const nmPerDegreeLon = 60.0 * Math.cos((currentPosition.latitude * Math.PI) / 180.0) || 60.0
+    const deltaNM = 16.0
+    const hazardLat = currentPosition.latitude + (deltaNM * Math.cos(headingRad)) / nmPerDegreeLat
+    const hazardLon = currentPosition.longitude + (deltaNM * Math.sin(headingRad)) / nmPerDegreeLon
     const hazardCenter: Coordinate = {
-      latitude: Number(forwardPt.latitude.toFixed(4)),
-      longitude: Number(forwardPt.longitude.toFixed(4)),
+      latitude: Number(hazardLat.toFixed(4)),
+      longitude: Number(hazardLon.toFixed(4)),
     }
 
     const hazardName =

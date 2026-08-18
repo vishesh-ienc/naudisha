@@ -624,6 +624,38 @@ export function MapCanvas({
           </Marker>
         )}
 
+        {/* Injected Dynamic Simulation Hazard Zone */}
+        {simulationHazard && (
+          <>
+            <Circle
+              center={[simulationHazard.center.latitude, simulationHazard.center.longitude]}
+              radius={simulationHazard.radiusNm * 1852}
+              pathOptions={{
+                color: '#ef4444',
+                fillColor: '#f87171',
+                fillOpacity: 0.25,
+                weight: 2.5,
+                dashArray: '8, 6',
+              }}
+            />
+            <Marker
+              position={[simulationHazard.center.latitude, simulationHazard.center.longitude]}
+              icon={stormVortexIcon(simulationHazard.radiusNm)}
+              zIndexOffset={950}
+            >
+              <Popup className="naudisha-popup">
+                <div className="p-1 font-sans text-xs">
+                  <div className="font-bold text-rose-400">⚠️ {simulationHazard.name}</div>
+                  <div className="text-[11px] text-slate-200 mt-0.5">{simulationHazard.description || 'Active hazard zone'}</div>
+                  <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+                    Center: {formatCoordinate(simulationHazard.center, 2)} | Radius: {simulationHazard.radiusNm} NM
+                  </div>
+                </div>
+              </Popup>
+            </Marker>
+          </>
+        )}
+
         {/* Route Alert Hazard Markers */}
         {alerts.map((alert) => {
           if (!alert.position) return null
