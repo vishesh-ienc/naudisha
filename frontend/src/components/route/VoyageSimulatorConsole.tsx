@@ -90,11 +90,11 @@ export function VoyageSimulatorConsole({
   const handleInjectHazard = async (type: 'storm' | 'current' | 'restricted') => {
     if (routeRef.current.length < 2) return
 
-    // Position hazard circle 16 NM directly ahead of vessel along current heading
+    // Position hazard circle 22 NM directly ahead of vessel along current heading
     const headingRad = (currentHeading * Math.PI) / 180.0
     const nmPerDegreeLat = 60.0
     const nmPerDegreeLon = 60.0 * Math.cos((currentPosition.latitude * Math.PI) / 180.0) || 60.0
-    const deltaNM = 16.0
+    const deltaNM = 22.0
     const hazardLat = currentPosition.latitude + (deltaNM * Math.cos(headingRad)) / nmPerDegreeLat
     const hazardLon = currentPosition.longitude + (deltaNM * Math.sin(headingRad)) / nmPerDegreeLon
     const hazardCenter: Coordinate = {
@@ -116,7 +116,7 @@ export function VoyageSimulatorConsole({
         ? 'Opposing 3.5 kn current.'
         : 'Navigation exclusion boundary.'
 
-    const hazardRadius = type === 'storm' ? 30 : 22
+    const hazardRadius = 15
 
     const hazard: SimulationHazard = {
       id: `hazard-${Date.now()}`,

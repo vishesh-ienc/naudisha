@@ -672,10 +672,12 @@ class RoutePlanningService:
                 hazard_lat, hazard_lon, hazard_radius_nm
             )
 
-            if crosses_hazard or dist_to_hazard_nm <= hazard_radius_nm * 1.1:
+            if crosses_hazard or dist_to_hazard_nm <= hazard_radius_nm * 1.15:
                 affected_edges += 1
-                edge.is_navigable = False
-                edge.cost = float("inf")
+                # Heavy cost multiplier (300x) forces D* Lite to route around the hazard perimeter
+                # while keeping the graph connected even if start_node is near the hazard boundary.
+                base_c = edge.cost if (edge.cost > 0 and edge.cost != float("inf")) else 1.0
+                edge.cost = base_c * 300.0 * hazard_severity
 
         # 4. Measure D* Lite execution latency
         t0 = time.perf_counter()
