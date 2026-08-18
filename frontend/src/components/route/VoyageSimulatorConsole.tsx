@@ -3,9 +3,7 @@ import {
   Play,
   Pause,
   RotateCcw,
-  CloudLightning,
   Waves,
-  AlertTriangle,
   Gauge,
   Cpu,
   Radio,
@@ -13,7 +11,6 @@ import {
   ChevronUp,
   X,
   Compass,
-  Sparkles,
 } from 'lucide-react'
 import type { Coordinate, RouteLeg } from '@/types/api'
 import type { SimulationHazard } from '@/map/MapCanvas'
@@ -70,7 +67,7 @@ export function VoyageSimulatorConsole({
       id: 'log-0',
       time: new Date().toLocaleTimeString(),
       type: 'info',
-      message: 'Voyage Simulation Active: Dynamic D* Lite weather monitoring underway.',
+      message: 'Simulation initialized. Monitoring route track.',
     },
   ])
 
@@ -113,17 +110,17 @@ export function VoyageSimulatorConsole({
 
     const hazardName =
       type === 'storm'
-        ? 'Severe Tropical Cyclone Vortex'
+        ? 'Severe Storm Cell'
         : type === 'current'
-        ? 'Adverse Counter-Current Gyre'
-        : 'Navigational Exclusion Area'
+        ? 'Adverse Counter-Current'
+        : 'Restricted Navigation Area'
 
     const hazardDesc =
       type === 'storm'
-        ? 'Dangerous sea state: 5.5m significant waves & 48 kn sustained winds. Immediate passage blocked.'
+        ? 'High sea state: 5.5m waves and strong headwinds.'
         : type === 'current'
-        ? 'Strong opposing 3.5 kn current creating heavy hydrodynamic drag.'
-        : 'Restricted naval navigation zone.'
+        ? 'Opposing 3.5 kn current.'
+        : 'Navigation exclusion boundary.'
 
     const hazardRadius = type === 'storm' ? 30 : 22
 
@@ -142,7 +139,7 @@ export function VoyageSimulatorConsole({
     onHazardUpdate(hazard)
     addLog(
       'hazard',
-      `⚠️ Storm Warning Encountered Ahead at ${formatCoordinate(hazard.center, 2)} (${hazard.radiusNm} NM radius). D* Lite dynamic avoidance active.`
+      `Hazard detected at ${formatCoordinate(hazard.center, 2)} (${hazard.radiusNm} NM radius). Computing avoidance track.`
     )
 
     // Call Backend Dynamic Replan API
@@ -334,17 +331,14 @@ export function VoyageSimulatorConsole({
     return dist
   })()
 
-  // MINIMIZED COMPACT BAR (Never blocks map or vessel)
+  // MINIMIZED COMPACT BAR
   if (isMinimized) {
     return (
-      <div className="absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[500] flex items-center justify-between gap-2.5 rounded-xl border border-cyan-500/40 bg-slate-950/90 px-3.5 py-2 shadow-2xl backdrop-blur-md text-foreground">
+      <div className="absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[500] flex items-center justify-between gap-2.5 rounded-xl border border-[var(--border)] bg-card/95 px-3.5 py-2 shadow-xl backdrop-blur-md text-foreground">
         <div className="flex items-center gap-2">
-          <span className="flex h-2.5 w-2.5 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500" />
-          </span>
-          <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider hidden sm:inline">
-            D* Lite Sim
+          <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
+          <span className="text-xs font-bold text-foreground uppercase tracking-wider hidden sm:inline">
+            Dynamic Simulator
           </span>
         </div>
 
@@ -355,29 +349,29 @@ export function VoyageSimulatorConsole({
             onClick={() => setIsPlaying(!isPlaying)}
             className={cn(
               'flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-all',
-              isPlaying ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+              isPlaying ? 'bg-secondary text-foreground' : 'bg-primary text-primary-foreground'
             )}
           >
             {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {isPlaying ? 'Pause' : 'Sail'}
+            {isPlaying ? 'Pause' : 'Run'}
           </button>
 
           <button
             type="button"
-            onClick={() => handleInjectHazard('storm')}
+            onClick={() => handleInjectHazard('current')}
             disabled={isReplanning}
-            className="flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/20 px-2.5 py-1 text-[11px] font-semibold text-rose-300 hover:bg-rose-500/30 transition-all"
-            title="Inject Severe Storm Hazard"
+            className="flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-400 hover:bg-amber-500/20 transition-all"
+            title="Inject Counter-Current Hazard"
           >
-            <CloudLightning className="h-3.5 w-3.5 text-rose-400" />
-            <span>Storm</span>
+            <Waves className="h-3.5 w-3.5" />
+            <span>Hazard</span>
           </button>
 
           {activeHazard && (
             <button
               type="button"
               onClick={handleClearHazards}
-              className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-300 hover:text-white"
+              className="rounded-md border border-[var(--border)] bg-secondary px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"
             >
               Clear
             </button>
@@ -385,14 +379,14 @@ export function VoyageSimulatorConsole({
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] text-slate-300 hidden md:inline">
+          <span className="font-mono text-[11px] text-muted-foreground hidden md:inline">
             {currentSpeedKn} kn · {Math.round(currentHeading)}°
           </span>
 
           <button
             type="button"
             onClick={() => setIsMinimized(false)}
-            className="flex items-center gap-1 rounded-md bg-slate-800 p-1 text-slate-300 hover:text-white transition-colors"
+            className="flex items-center gap-1 rounded-md bg-secondary p-1 text-muted-foreground hover:text-foreground transition-colors"
             title="Expand Controls & Telemetry"
           >
             <ChevronUp className="h-4 w-4" />
@@ -400,7 +394,7 @@ export function VoyageSimulatorConsole({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md p-1 text-slate-400 hover:text-rose-300 transition-colors"
+            className="rounded-md p-1 text-muted-foreground hover:text-rose-400 transition-colors"
             title="Close Simulator"
           >
             <X className="h-4 w-4" />
@@ -410,21 +404,18 @@ export function VoyageSimulatorConsole({
     )
   }
 
-  // EXPANDED DOCKED COMMAND CONSOLE (Bottom-Right, fully translucent, non-intrusive)
+  // EXPANDED DOCKED COMMAND CONSOLE
   return (
-    <div className="absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[500] w-auto sm:w-[460px] max-h-[85%] overflow-y-auto rounded-xl border border-cyan-500/30 bg-slate-950/90 p-3.5 shadow-2xl backdrop-blur-md text-foreground transition-all">
+    <div className="absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[500] w-auto sm:w-[460px] max-h-[85%] overflow-y-auto rounded-xl border border-[var(--border)] bg-card/95 p-3.5 shadow-xl backdrop-blur-md text-foreground transition-all">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+      <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
         <div className="flex items-center gap-2">
-          <span className="flex h-3 w-3 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-cyan-500" />
-          </span>
+          <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">
-              D* Lite Dynamic Voyage Simulator
+            <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
+              Dynamic Passage Simulator
             </h3>
-            <p className="text-[10px] text-muted-foreground">Real-Time Maritime Replanning Engine</p>
+            <p className="text-[10px] text-muted-foreground">Real-Time D* Lite Storm Avoidance Engine</p>
           </div>
         </div>
 
@@ -497,18 +488,15 @@ export function VoyageSimulatorConsole({
       </div>
 
       {/* Auto Dynamic Weather & Hazard Panel */}
-      <div className="mt-2.5 rounded-lg border border-cyan-500/20 bg-slate-900/60 p-2.5">
-        <div className="flex items-center justify-between text-[11px] font-semibold text-slate-300 mb-2">
-          <div className="flex items-center gap-1.5">
-            <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
-            <span>Dynamic Weather &amp; Storms</span>
-          </div>
+      <div className="mt-2.5 rounded border border-[var(--border)] bg-secondary/30 p-2.5">
+        <div className="flex items-center justify-between text-[11px] font-semibold text-foreground mb-2">
+          <span>Inject Test Hazard</span>
           <div className="flex items-center gap-2">
             {activeHazard && (
               <button
                 type="button"
                 onClick={handleClearHazards}
-                className="text-[10px] text-slate-400 hover:text-rose-300 underline"
+                className="text-[10px] text-muted-foreground hover:text-foreground underline"
               >
                 Clear Hazard
               </button>
@@ -517,106 +505,86 @@ export function VoyageSimulatorConsole({
               type="button"
               onClick={() => setAutoDynamicWeather(!autoDynamicWeather)}
               className={cn(
-                'rounded-full px-2 py-0.5 text-[10px] font-semibold transition-all flex items-center gap-1 border',
+                'rounded px-2 py-0.5 text-[10px] font-semibold transition-all flex items-center gap-1 border',
                 autoDynamicWeather
-                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-sm'
-                  : 'bg-slate-800 text-slate-400 border-slate-700'
+                  ? 'bg-primary/20 text-primary border-primary/40'
+                  : 'bg-secondary text-muted-foreground border-[var(--border)]'
               )}
             >
-              <span className={cn('h-1.5 w-1.5 rounded-full', autoDynamicWeather ? 'bg-cyan-400 animate-pulse' : 'bg-slate-500')} />
-              Auto Weather: {autoDynamicWeather ? 'ON' : 'OFF'}
+              <span className={cn('h-1.5 w-1.5 rounded-full', autoDynamicWeather ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+              Auto Hazards: {autoDynamicWeather ? 'ON' : 'OFF'}
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-1.5">
-          <button
-            type="button"
-            onClick={() => handleInjectHazard('storm')}
-            disabled={isReplanning}
-            className="flex flex-col items-center justify-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 p-1.5 text-center text-[10px] font-medium text-rose-300 hover:bg-rose-500/20 hover:border-rose-500/50 transition-all disabled:opacity-50"
-          >
-            <CloudLightning className="h-4 w-4 text-rose-400" />
-            <span>+ Cyclone</span>
-          </button>
-
+        <div className="flex gap-1.5">
           <button
             type="button"
             onClick={() => handleInjectHazard('current')}
             disabled={isReplanning}
-            className="flex flex-col items-center justify-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 p-1.5 text-center text-[10px] font-medium text-amber-300 hover:bg-amber-500/20 hover:border-amber-500/50 transition-all disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-1.5 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-center text-xs font-medium text-amber-400 hover:bg-amber-500/20 transition-all disabled:opacity-50"
           >
-            <Waves className="h-4 w-4 text-amber-400" />
-            <span>+ Counter Gyre</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleInjectHazard('restricted')}
-            disabled={isReplanning}
-            className="flex flex-col items-center justify-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 p-1.5 text-center text-[10px] font-medium text-sky-300 hover:bg-sky-500/20 hover:border-sky-500/50 transition-all disabled:opacity-50"
-          >
-            <AlertTriangle className="h-4 w-4 text-sky-400" />
-            <span>+ Exclusion Zone</span>
+            <Waves className="h-4 w-4" />
+            <span>+ Inject Counter-Current Hazard</span>
           </button>
         </div>
       </div>
 
       {/* Live Diverted Course Alert Banner */}
       {divertedCourseDeg !== null && (
-        <div className="mt-2 flex items-center justify-between rounded-lg border border-emerald-500/40 bg-emerald-950/20 px-2.5 py-1.5 text-[11px] text-emerald-300">
+        <div className="mt-2 flex items-center justify-between rounded border border-emerald-500/40 bg-emerald-950/20 px-2.5 py-1.5 text-[11px] text-emerald-300">
           <div className="flex items-center gap-1.5">
-            <Compass className="h-3.5 w-3.5 text-emerald-400 animate-spin" style={{ animationDuration: '8s' }} />
-            <span>Dynamic Diversion: <strong>{Math.round(divertedCourseDeg)}° Course</strong></span>
+            <Compass className="h-3.5 w-3.5 text-emerald-400" />
+            <span>Course Altered: <strong>{Math.round(divertedCourseDeg)}°</strong></span>
           </div>
-          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-mono font-bold text-emerald-400">
-            D* Lite Active
+          <span className="rounded bg-emerald-500/20 px-1.5 py-0.2 font-mono text-[9px] font-bold text-emerald-400">
+            Re-planned
           </span>
         </div>
       )}
 
       {/* Live Vessel Telemetry & D* Lite Engine HUD */}
       <div className="mt-2.5 grid grid-cols-2 gap-2 text-[11px]">
-        <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
-          <div className="flex items-center gap-1 text-slate-400 text-[10px]">
-            <Gauge className="h-3 w-3 text-cyan-400" />
-            Vessel Fix &amp; Speed
+        <div className="rounded border border-[var(--border)] bg-secondary/20 p-2">
+          <div className="flex items-center gap-1 text-muted-foreground text-[10px]">
+            <Gauge className="h-3 w-3" />
+            Position &amp; Speed
           </div>
           <div className="mt-0.5 font-mono font-bold text-foreground text-[11px]">
             {formatCoordinate(currentPosition, 3)}
           </div>
-          <div className="mt-0.5 text-[10px] text-cyan-300">
-            Speed: <span className="font-bold">{currentSpeedKn} kn</span> · Heading: <span className="font-bold">{Math.round(currentHeading)}°</span>
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
+            SOG: <span className="font-bold text-foreground">{currentSpeedKn} kn</span> · HDG: <span className="font-bold text-foreground">{Math.round(currentHeading)}°</span>
           </div>
         </div>
 
-        <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
-          <div className="flex items-center gap-1 text-slate-400 text-[10px]">
-            <Cpu className="h-3 w-3 text-emerald-400" />
-            D* Lite Dynamic Repair
+        <div className="rounded border border-[var(--border)] bg-secondary/20 p-2">
+          <div className="flex items-center gap-1 text-muted-foreground text-[10px]">
+            <Cpu className="h-3 w-3" />
+            Re-planning Engine
           </div>
-          <div className="mt-0.5 font-mono font-bold text-emerald-400 text-[11px]">
-            {replanStats ? `${replanStats.latencyMs.toFixed(1)} ms` : 'Monitoring'}
+          <div className="mt-0.5 font-mono font-bold text-foreground text-[11px]">
+            {replanStats ? `${replanStats.latencyMs.toFixed(1)} ms` : 'Standby'}
           </div>
-          <div className="mt-0.5 text-[10px] text-slate-300">
-            {replanStats ? `${replanStats.edgesUpdated} Edges Repaired` : '0 Active Obstacles'}
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
+            {replanStats ? `${replanStats.edgesUpdated} Edges Updated` : 'No active deviations'}
           </div>
         </div>
       </div>
 
       {/* Live Event Ticker */}
       <div className="mt-2">
-        <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 mb-1">
+        <div className="flex items-center justify-between text-[10px] font-semibold text-muted-foreground mb-1">
           <span className="flex items-center gap-1">
-            <Radio className="h-3 w-3 text-cyan-400 animate-pulse" />
-            Telemetry Log
+            <Radio className="h-3 w-3 text-primary" />
+            Event Log
           </span>
-          <span className="font-mono text-slate-500">
+          <span className="font-mono text-muted-foreground">
             {totalDistanceRemaining.toFixed(0)} NM Remaining
           </span>
         </div>
 
-        <div className="max-h-24 overflow-y-auto space-y-1 rounded-md bg-slate-900/90 p-1.5 border border-slate-800 font-mono text-[9.5px]">
+        <div className="max-h-24 overflow-y-auto space-y-1 rounded bg-secondary/40 p-1.5 border border-[var(--border)] font-mono text-[9.5px]">
           {eventLogs.map((log) => (
             <div
               key={log.id}
@@ -625,10 +593,10 @@ export function VoyageSimulatorConsole({
                 log.type === 'hazard' && 'text-rose-400 font-semibold',
                 log.type === 'replan' && 'text-amber-300 font-semibold',
                 log.type === 'success' && 'text-emerald-400 font-bold',
-                log.type === 'info' && 'text-slate-300'
+                log.type === 'info' && 'text-muted-foreground'
               )}
             >
-              <span className="text-slate-500 text-[8.5px] shrink-0">[{log.time}]</span>
+              <span className="opacity-60 text-[8.5px] shrink-0">[{log.time}]</span>
               <span>{log.message}</span>
             </div>
           ))}

@@ -307,11 +307,31 @@ def submit_route_plan(
     vessel_provider: VesselProvider = Depends(get_vessel_provider),
 ) -> PlanJobResponse:
     """Queues a plan and returns a job handle. Identical voyages share one job."""
-    # Explicit particulars are free to use immediately; an IMO lookup is not, so
-    # it is deferred to the worker thread to keep this handler instant.
     ship_profile = request.ship.to_domain_model() if request.ship is not None else None
 
     planning_manager.set_route_service(service)
+
+    # Pre-warm standard corridors in background if not already pre-warmed
+    def _do_prewarm():
+        standard_corridors = [
+            (18.95, 72.82, 25.26, 55.28),  # Mumbai -> Dubai
+            (18.95, 72.82, 21.49, 39.18),  # Mumbai -> Jeddah
+            (18.95, 72.82, 16.94, 54.00),  # Mumbai -> Salalah
+        ]
+        objectives = ["balanced", "fuel_efficiency", "fastest", "safety"]
+        for slat, slon, dlat, dlon in standard_corridors:
+            for obj in objectives:
+                try:
+                    sig = planning_manager.signature(None, (slat, slon), (dlat, dlon), None, obj)
+                    if planning_manager.cached_result(sig) is None:
+                        res = service.plan_preview_route(None, slat, slon, dlat, dlon, optimization_objective=obj)
+                        planning_manager._cache[sig] = (time.monotonic(), res)
+                except Exception:
+                    pass
+
+    import threading
+    threading.Thread(target=_do_prewarm, daemon=True).start()
+
     signature = planning_manager.signature(
         imo_number=request.imo_number,
         start=(request.start.latitude, request.start.longitude),

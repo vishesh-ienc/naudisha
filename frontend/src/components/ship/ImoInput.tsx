@@ -9,9 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ship } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
-import { Badge } from '@/components/ui/Badge'
-import { SAMPLE_IMO_NUMBERS, normalizeImo, validateImo } from '@/lib/imo'
-import { cn } from '@/lib/utils'
+import { normalizeImo, validateImo } from '@/lib/imo'
 
 interface ImoInputProps {
   value: string
@@ -21,7 +19,6 @@ interface ImoInputProps {
   label?: string
   disabled?: boolean
   autoFocus?: boolean
-  showSamples?: boolean
   className?: string
 }
 
@@ -32,7 +29,6 @@ export function ImoInput({
   label = 'IMO Number',
   disabled,
   autoFocus,
-  showSamples = true,
   className,
 }: ImoInputProps) {
   const [touched, setTouched] = useState(false)
@@ -54,7 +50,7 @@ export function ImoInput({
   }, [currentValid, onValidChange])
 
   const error = shouldValidate && !result.valid && normalized.length > 0 ? result.message : null
-  const success = result.valid ? 'Valid IMO number (ISO 8713 checksum passes)' : null
+  const success = result.valid ? 'Valid IMO number (ISO 8713 checksum verified)' : null
 
   return (
     <div className={className}>
@@ -62,22 +58,21 @@ export function ImoInput({
         label={label}
         value={value}
         onChange={(e) => {
-          // Permit digits plus the separators people paste, and cap the length
-          // so the field cannot silently accumulate junk.
+          // Permit digits plus standard separators
           const next = e.target.value.replace(/[^\d\s\-a-zA-Z:]/g, '').slice(0, 16)
           onChange(next)
         }}
         onBlur={() => setTouched(true)}
-        placeholder="9074729"
+        placeholder="e.g. 9811000"
         inputMode="numeric"
         autoComplete="off"
         spellCheck={false}
         disabled={disabled}
         autoFocus={autoFocus}
-        leadingIcon={<Ship className="h-4 w-4" aria-hidden />}
+        leadingIcon={<Ship className="h-4 w-4 text-muted-foreground" aria-hidden />}
         error={error}
         success={success}
-        hint="Seven digits. The final digit is a checksum."
+        hint="7-digit IMO ship identification number with ISO 8713 check digit."
         trailing={
           normalized.length > 0 ? (
             <span className="font-mono text-[10px] text-muted-foreground">
@@ -86,40 +81,6 @@ export function ImoInput({
           ) : null
         }
       />
-
-      {showSamples && (
-        <div className="mt-3">
-          <p className="mb-1.5 text-[11px] text-muted-foreground">Try a sample vessel</p>
-          <div className="flex flex-wrap gap-1.5">
-            {SAMPLE_IMO_NUMBERS.map((sample) => (
-              <button
-                key={sample.imo}
-                type="button"
-                disabled={disabled}
-                onClick={() => {
-                  onChange(sample.imo)
-                  setTouched(true)
-                }}
-                className={cn(
-                  'rounded-md border border-[var(--border)] px-2 py-1 text-[11px] transition-colors',
-                  'hover:border-primary/40 hover:bg-primary/5 disabled:opacity-50',
-                  normalized === sample.imo && 'border-primary/50 bg-primary/10',
-                )}
-                title={`${sample.name} — ${sample.type}`}
-              >
-                <span className="font-mono">{sample.imo}</span>
-                <span className="ml-1.5 text-muted-foreground">{sample.name}</span>
-              </button>
-            ))}
-          </div>
-          <p className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
-            <Badge variant="neutral" className="px-1 py-0 text-[9px]">
-              NOTE
-            </Badge>
-            Real IMO numbers — they exercise the checksum rather than bypassing it.
-          </p>
-        </div>
-      )}
     </div>
   )
 }

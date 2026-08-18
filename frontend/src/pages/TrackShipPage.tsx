@@ -123,11 +123,11 @@ export function TrackShipPage() {
       {/* Header Bar */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border)] pb-4">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-400">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Navigation className="h-4.5 w-4.5" aria-hidden />
             </span>
-            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">Track a Ship</h1>
+            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">Vessel AIS Tracking</h1>
           </div>
           <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
             Enter an IMO number to stream real-time transponder data, course heading, and continuous optimal routing on the chart.
@@ -192,7 +192,7 @@ export function TrackShipPage() {
                     type="button"
                     variant="primary"
                     size="lg"
-                    className="w-full font-semibold shadow-md shadow-cyan-500/20 bg-cyan-600 hover:bg-cyan-500 text-white"
+                    className="w-full font-semibold shadow-sm"
                     disabled={!validImo || identifying}
                     onClick={handleStartTracking}
                   >

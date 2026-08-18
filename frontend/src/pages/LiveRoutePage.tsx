@@ -1,23 +1,10 @@
-/**
- * Flow 3 — Live Location + Destination Routing.
- *
- * Glitch-free interface:
- *  - Vessel IMO Number (acquires live transponder fix)
- *  - Destination Port autocomplete from worldwide port database
- *  - Calculates optimal route from live vessel position to destination
- *  - Renders Green Optimal Route, Red Direct Baseline, Animated Vectors
- *  - Full-width Calculation Console below map
- */
-
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertTriangle,
   ChevronDown,
-  LocateFixed,
   RefreshCw,
-  Sparkles,
 } from 'lucide-react'
 
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
@@ -65,20 +52,18 @@ export function LiveRoutePage() {
       setCurrentLocation(res.position ?? null)
     } catch (err: any) {
       setIdentifyError(
-        err?.detail ?? `There are no live vessels found with IMO ${imo}. Please verify the 7-digit IMO number.`,
+        err?.detail ?? `No live vessel found with IMO ${imo}. Please check the 7-digit IMO number.`,
       )
     } finally {
       setIdentifying(false)
     }
   }, [validImo])
 
-  // Initial lookup on mount only if URL query IMO provided
   useEffect(() => {
     if (queryImo && validateImo(queryImo).valid) {
       handleLookupVessel(queryImo)
     }
   }, [queryImo, handleLookupVessel])
-
 
   const handleCalculateRoute = useCallback(async () => {
     if (!currentLocation || !destCoord) return
@@ -91,11 +76,9 @@ export function LiveRoutePage() {
     })
   }, [currentLocation, destCoord, validImo, ship, plan])
 
-
   const isPlanning = phase === 'submitting' || phase === 'planning'
   const canCalculate = currentLocation && destCoord && haversineNm(currentLocation, destCoord) > 1
 
-  // Toast + scroll-to-map on route start
   useEffect(() => {
     if (isPlanning) {
       setShowScrollToast(true)
@@ -105,7 +88,6 @@ export function LiveRoutePage() {
     }
   }, [isPlanning])
 
-  // Scroll to console when route is ready
   useEffect(() => {
     if (phase === 'ready' && route) {
       setTimeout(() => consoleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 200)
@@ -113,25 +95,18 @@ export function LiveRoutePage() {
   }, [phase, route])
 
   return (
-    <div className="mx-auto max-w-[1700px] px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mx-auto max-w-[1700px] px-4 py-5 sm:px-6 lg:px-8">
       {/* Header Bar */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border)] pb-4">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border)] pb-3">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
-              <LocateFixed className="h-4.5 w-4.5" aria-hidden />
-            </span>
-            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">
-              Live Location + Destination Routing
-            </h1>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-            Enter a vessel IMO to lock onto its live transponder, choose a world destination port, and calculate an optimal route.
+          <h1 className="text-xl font-bold text-foreground">Live Vessel Routing</h1>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Fetch real-time AIS transponder coordinates for a vessel and calculate a route to destination.
           </p>
         </div>
         <div className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
-          <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-          Live Transponder Active
+          <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
+          AIS Feed Active
         </div>
       </div>
 
@@ -139,33 +114,31 @@ export function LiveRoutePage() {
       <AnimatePresence>
         {showScrollToast && (
           <motion.div
-            initial={{ opacity: 0, y: -20, x: 20 }}
-            animate={{ opacity: 1, y: 0, x: 0 }}
-            exit={{ opacity: 0, y: -20, x: 20 }}
-            className="fixed right-6 top-16 z-50 flex items-center gap-2.5 rounded-2xl border border-emerald-500/30 bg-card/95 px-4 py-3 shadow-2xl shadow-black/30 backdrop-blur-md"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="fixed right-6 top-16 z-50 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-card px-3.5 py-2.5 shadow-lg"
           >
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
-              <ChevronDown className="h-4 w-4" />
-            </span>
+            <ChevronDown className="h-4 w-4 text-primary" />
             <div>
-              <div className="text-xs font-semibold text-foreground">Route Calculating…</div>
-              <div className="text-[11px] text-muted-foreground">Scroll down to see optimization progress</div>
+              <div className="text-xs font-semibold text-foreground">Calculating Route…</div>
+              <div className="text-[11px] text-muted-foreground">See details in console below map</div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Main Grid */}
-      <div className="grid gap-6 lg:grid-cols-12">
+      <div className="grid gap-5 lg:grid-cols-12">
         {/* Left Controls (4 cols) */}
-        <div className="space-y-5 lg:col-span-4 xl:col-span-4">
+        <div className="space-y-4 lg:col-span-4 xl:col-span-4">
           {/* IMO Input */}
           <Card>
             <CardHeader
-              title="1. Live Vessel Transponder"
-              description="Enter 7-digit IMO to acquire real-time vessel position"
+              title="Vessel Selection"
+              description="Enter 7-digit IMO number to retrieve position"
             />
-            <CardBody className="space-y-4">
+            <CardBody className="space-y-3.5">
               <div className="flex items-center gap-2">
                 <ImoInput
                   value={imoText}
@@ -187,48 +160,45 @@ export function LiveRoutePage() {
                   onClick={() => handleLookupVessel()}
                   className="shrink-0"
                 >
-                  {identifying ? 'Locating…' : 'Locate'}
+                  {identifying ? 'Searching…' : 'Search'}
                 </Button>
               </div>
 
               {identifyError && (
-                <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2">
+                <div className="rounded border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive flex items-start gap-2">
                   <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                   <div>
-                    <div className="font-semibold">Vessel Not Found</div>
-                    <div className="mt-0.5 text-[11px] text-destructive/80">{identifyError}</div>
+                    <div className="font-semibold">Lookup Failed</div>
+                    <div className="mt-0.5 text-[11px] text-destructive/90">{identifyError}</div>
                   </div>
                 </div>
               )}
 
               {ship && !identifyError && (
-                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 font-mono text-xs">
+                <div className="rounded border border-[var(--border)] bg-secondary/30 p-2.5 font-mono text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-                      Vessel Located
-                    </span>
+                    <span className="font-semibold text-foreground">{ship.name}</span>
                     {ship.is_live_position ? (
-                      <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-400">
+                      <span className="rounded bg-emerald-500/20 px-1.5 py-0.2 text-[9px] font-bold text-emerald-400">
                         AIS LIVE
                       </span>
                     ) : ship.position ? (
-                      <span className="rounded bg-slate-500/20 px-1.5 py-0.5 text-[9px] font-bold text-slate-300">
-                        STATIC DATA
+                      <span className="rounded bg-slate-500/20 px-1.5 py-0.2 text-[9px] text-slate-300">
+                        STATIC POS
                       </span>
                     ) : (
-                      <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
-                        NO LIVE POSITION
+                      <span className="rounded bg-amber-500/20 px-1.5 py-0.2 text-[9px] text-amber-300">
+                        NO POS
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 font-semibold text-foreground">{ship.name}</div>
                   {ship.position ? (
-                    <div className="text-muted-foreground text-[10px]">
-                      {ship.position.latitude.toFixed(4)}°N, {ship.position.longitude.toFixed(4)}°E
+                    <div className="text-muted-foreground text-[10px] mt-1">
+                      Lat: {ship.position.latitude.toFixed(4)}°, Lon: {ship.position.longitude.toFixed(4)}°
                     </div>
                   ) : (
-                    <div className="mt-1 text-[10px] text-amber-400/90">
-                      Waiting for AIS transponder fix.
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                      Awaiting transponder signal.
                     </div>
                   )}
                 </div>
@@ -239,48 +209,45 @@ export function LiveRoutePage() {
           {/* Destination */}
           <Card>
             <CardHeader
-              title="2. Destination Port"
-              description="Type and search any worldwide arrival port"
+              title="Destination"
+              description="Select arrival port"
             />
-            <CardBody className="space-y-4">
+            <CardBody className="space-y-3.5">
               <PortSearchInput
                 label="Destination Port"
-                placeholder="Search global port (e.g. Dubai, Singapore, Rotterdam, Shanghai, Goa)…"
+                placeholder="Search port (e.g. Dubai, Singapore, Rotterdam, Goa)…"
                 value={destCoord}
                 onChange={(coord) => setDestCoord(coord)}
                 accent="destination"
               />
 
-              <div className="pt-2">
+              <div className="pt-1">
                 <Button
                   type="button"
                   variant="primary"
                   size="lg"
-                  className="w-full font-semibold shadow-md shadow-emerald-500/20 bg-emerald-600 hover:bg-emerald-500 text-white"
+                  className="w-full font-semibold shadow-xs"
                   disabled={!canCalculate || isPlanning}
                   onClick={handleCalculateRoute}
                 >
                   {isPlanning ? (
                     <span className="flex items-center gap-2">
                       <RefreshCw className="h-4 w-4 animate-spin" />
-                      Optimizing… ({Math.round(progressPercent)}%)
+                      Calculating Route… ({Math.round(progressPercent)}%)
                     </span>
                   ) : (
-                    <span className="flex items-center gap-2">
-                      <Sparkles className="h-4 w-4" />
-                      Calculate Route from Live Location
-                    </span>
+                    'Calculate Route'
                   )}
                 </Button>
               </div>
 
               {planError && (
-                <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-                  <div className="flex items-center gap-1.5 font-semibold">
-                    <AlertTriangle className="h-4 w-4 shrink-0" />
-                    Route Calculation Failed
+                <div className="rounded border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold">Calculation Error</div>
+                    <div className="mt-0.5 text-[11px] text-destructive/90">{planError}</div>
                   </div>
-                  <p className="mt-1 text-[11px] text-destructive/80">{planError}</p>
                 </div>
               )}
             </CardBody>
@@ -312,9 +279,9 @@ export function LiveRoutePage() {
         </div>
       </div>
 
-      {/* Full-width Calculation Console below map */}
+      {/* Calculation Console below map */}
       {(isPlanning || route) && (
-        <div ref={consoleRef} className="mt-6">
+        <div ref={consoleRef} className="mt-5">
           <CalculationConsole
             route={route}
             shipParticulars={ship?.ship}

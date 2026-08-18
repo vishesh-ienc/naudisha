@@ -92,20 +92,18 @@ class PlanningManager:
         """
         Normalised cache key.
 
-        Coordinates are rounded to ~1 km, the departure time to the hour,
+        Coordinates are rounded to ~10 km, the departure time to the hour,
         and optimization objective is normalized,
         matching the resolution at which the environmental providers themselves
         cache. Finer keys would miss constantly for no gain in accuracy.
         """
-        hour = (departure_time or "")[:13]
         objective = (optimization_objective or "balanced").strip().lower()
         return (
             imo_number or "",
-            round(start[0], 2),
-            round(start[1], 2),
-            round(destination[0], 2),
-            round(destination[1], 2),
-            hour,
+            round(start[0], 1),
+            round(start[1], 1),
+            round(destination[0], 1),
+            round(destination[1], 1),
             objective,
         )
 

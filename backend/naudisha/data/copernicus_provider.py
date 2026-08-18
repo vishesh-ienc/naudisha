@@ -108,6 +108,12 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
         self.spatial_delta_deg = spatial_delta_deg
         self.temporal_delta_hours = temporal_delta_hours
         self._reader_fn = reader_fn
+        import os
+        from pathlib import Path
+        has_env_creds = bool(os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME") and os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD"))
+        cred_dir = Path.home() / ".copernicusmarine"
+        has_file_creds = cred_dir.exists() and any(cred_dir.iterdir())
+        self._offline_mode = False if (reader_fn is not None or has_env_creds or has_file_creds) else True
         self._cache: Dict[Tuple[float, float, str], EnvironmentalData] = {}
         self._bbox_df_cache: Dict[str, Tuple[float, float, float, float, Any, Any]] = {}
 
@@ -347,6 +353,9 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
         import os
         from pathlib import Path
 
+        if self._offline_mode:
+            raise CopernicusDataUnavailableError("Copernicus Marine is currently in offline baseline mode.")
+
         has_env_creds = bool(
             os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")
             and os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD")
@@ -355,6 +364,7 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
         has_file_creds = cred_dir.exists() and any(cred_dir.iterdir())
 
         if self._reader_fn is None and not (has_env_creds or has_file_creds):
+            self._offline_mode = True
             raise CopernicusAuthenticationError(
                 "No local Copernicus Marine credentials found. "
                 "Please run 'copernicusmarine login' to authenticate."
@@ -378,10 +388,20 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
             query_kwargs["minimum_depth"] = depth_level
             query_kwargs["maximum_depth"] = depth_level
 
+        def _do_read():
+            return reader(**query_kwargs)
+
         try:
-            df = reader(**query_kwargs)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_do_read)
+                df = future.result(timeout=2.0)
             return df
+        except TimeoutError:
+            self._offline_mode = True
+            logger.info("Copernicus Marine subset query timeout, switching to offline baseline mode.")
+            raise CopernicusDataUnavailableError("Copernicus Marine query timed out.")
         except Exception as exc:
+            self._offline_mode = True
             exc_str = str(exc).lower()
             if "credentials" in exc_str or "unauthorized" in exc_str or "login" in exc_str or "forbidden" in exc_str:
                 raise CopernicusAuthenticationError(

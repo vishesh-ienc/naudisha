@@ -2,7 +2,10 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ProxyOptions } from 'vite'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // Backend base URL. The Vite dev proxy keeps the browser on a single origin,
 // so no CORS configuration is ever needed on the backend during development.
@@ -56,6 +59,20 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/leaflet')) {
+            return 'leaflet'
+          }
+          if (id.includes('node_modules/lucide-react') || id.includes('node_modules/framer-motion')) {
+            return 'vendor-ui'
+          }
+        },
+      },
+    },
   },
   server: {
     port: 5173,

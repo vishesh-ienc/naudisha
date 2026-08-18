@@ -134,35 +134,68 @@ class CompositeEnvironmentalProvider(WeatherProvider, BatchCapableProvider):
         self.last_marine_source = "copernicus_live"
         self.last_wind_source = "open_meteo_live"
 
-        # 1 & 2. Concurrently fetch CMEMS marine batch and Open-Meteo wind batch in parallel
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="env_batch") as pool:
-            fut_marine = pool.submit(self.marine_provider.fetch_conditions_batch, request_list)
-            fut_wind = pool.submit(self.wind_provider.fetch_wind_batch, request_list)
-            try:
-                marine_results = fut_marine.result(timeout=4.0)
-            except Exception as exc:
-                logger.warning("Copernicus Marine batch query timed out or failed (%s), defaulting to hydrodynamic baseline.", exc)
-                self.last_marine_source = "climatology_fallback"
-                marine_results = {
-                    req: EnvironmentalData(
-                        timestamp=req.timestamp if isinstance(req.timestamp, str) else req.timestamp.isoformat(),
-                        wave_height=1.5,
-                        wave_direction=220.0,
-                        wave_period=7.0,
-                        current_speed=0.8,
-                        current_direction=90.0,
-                    )
-                    for req in request_list
-                }
-            try:
-                wind_results = fut_wind.result(timeout=3.5)
-            except Exception as exc:
-                logger.warning("Open-Meteo batch wind fetch failed (%s), defaulting to seasonal monsoon wind model.", exc)
-                self.last_wind_source = "climatology_fallback"
-                wind_results = {
-                    req: _get_climatological_wind(req.lat, req.lon, _normalize_utc_datetime(req.timestamp))
-                    for req in request_list
-                }
+        marine_offline = getattr(self.marine_provider, "_offline_mode", False)
+        wind_offline = getattr(self.wind_provider, "_offline_mode", False)
+
+        marine_results = None
+        wind_results = None
+
+        if marine_offline:
+            self.last_marine_source = "climatology_fallback"
+            marine_results = {
+                req: EnvironmentalData(
+                    timestamp=req.timestamp if isinstance(req.timestamp, str) else req.timestamp.isoformat(),
+                    wave_height=1.2,
+                    wave_direction=220.0,
+                    wave_period=7.0,
+                    current_speed=0.6,
+                    current_direction=65.0,
+                )
+                for req in request_list
+            }
+
+        if wind_offline:
+            self.last_wind_source = "climatology_fallback"
+            wind_results = {
+                req: _get_climatological_wind(req.lat, req.lon, _normalize_utc_datetime(req.timestamp))
+                for req in request_list
+            }
+
+        if marine_results is None or wind_results is None:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="env_batch") as pool:
+                fut_marine = pool.submit(self.marine_provider.fetch_conditions_batch, request_list) if marine_results is None else None
+                fut_wind = pool.submit(self.wind_provider.fetch_wind_batch, request_list) if wind_results is None else None
+
+                if fut_marine is not None:
+                    try:
+                        marine_results = fut_marine.result(timeout=1.5)
+                    except Exception as exc:
+                        if hasattr(self.marine_provider, "_offline_mode"):
+                            self.marine_provider._offline_mode = True
+                        self.last_marine_source = "climatology_fallback"
+                        marine_results = {
+                            req: EnvironmentalData(
+                                timestamp=req.timestamp if isinstance(req.timestamp, str) else req.timestamp.isoformat(),
+                                wave_height=1.2,
+                                wave_direction=220.0,
+                                wave_period=7.0,
+                                current_speed=0.6,
+                                current_direction=65.0,
+                            )
+                            for req in request_list
+                        }
+
+                if fut_wind is not None:
+                    try:
+                        wind_results = fut_wind.result(timeout=1.2)
+                    except Exception as exc:
+                        if hasattr(self.wind_provider, "_offline_mode"):
+                            self.wind_provider._offline_mode = True
+                        self.last_wind_source = "climatology_fallback"
+                        wind_results = {
+                            req: _get_climatological_wind(req.lat, req.lon, _normalize_utc_datetime(req.timestamp))
+                            for req in request_list
+                        }
 
         # 3. Assemble combined results
         results: Dict[ConditionRequest, EnvironmentalData] = {}

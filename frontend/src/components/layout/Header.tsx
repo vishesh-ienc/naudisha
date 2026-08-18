@@ -1,53 +1,46 @@
 import { Link, NavLink } from 'react-router-dom'
-import { Compass, LocateFixed, Route as RouteIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 import { ThemeToggle } from './ThemeToggle'
 import { BackendStatusPill } from './BackendStatusPill'
 
 const NAV_ITEMS = [
-  { to: '/plan', label: 'Plan Voyage', icon: RouteIcon },
-  { to: '/live-route', label: 'Live Routing', icon: LocateFixed },
+  { to: '/plan', label: 'Plan Voyage' },
+  { to: '/live-route', label: 'Live Tracking' },
 ]
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-background/85 backdrop-blur-md">
-      <div className="mx-auto flex h-14 max-w-[1700px] items-center gap-4 px-4 sm:px-6">
-        <Link to="/" className="group flex items-center gap-2.5" aria-label="NauDisha home">
-          <span className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500 text-black shadow-md shadow-cyan-500/20">
-            <Compass className="h-5 w-5 transition-transform duration-500 group-hover:rotate-90" aria-hidden />
-          </span>
-          <span className="flex flex-col leading-none">
+    <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-background/95 backdrop-blur-xs">
+      <div className="mx-auto flex h-12 max-w-[1700px] items-center justify-between gap-4 px-4 sm:px-6">
+        <div className="flex items-center gap-6">
+          <Link to="/" className="flex items-baseline gap-2" aria-label="NauDisha home">
             <span className="text-sm font-bold tracking-tight text-foreground">NauDisha</span>
-            <span className="mt-0.5 font-mono text-[9px] text-cyan-400 uppercase tracking-wider">
-              Marine Routing
-            </span>
-          </span>
-        </Link>
+            <span className="text-[10px] text-muted-foreground font-mono">v1.0</span>
+          </Link>
 
-        {/* 3 Core Navigation Items */}
-        <nav className="ml-6 hidden items-center gap-1.5 md:flex">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all',
-                  isActive
-                    ? 'bg-secondary text-cyan-400 shadow-sm'
-                    : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground',
-                )
-              }
-            >
-              <item.icon className="h-3.5 w-3.5" aria-hidden />
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
+          {/* Navigation Links */}
+          <nav className="flex items-center gap-1">
+            {NAV_ITEMS.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) =>
+                  cn(
+                    'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                    isActive
+                      ? 'bg-secondary text-foreground font-semibold'
+                      : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground',
+                  )
+                }
+              >
+                {item.label}
+              </NavLink>
+            ))}
+          </nav>
+        </div>
 
-        <div className="ml-auto flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <BackendStatusPill />
           <ThemeToggle />
         </div>

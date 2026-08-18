@@ -144,27 +144,23 @@ class OpenMeteoWindProvider(WeatherProvider):
                 "Accept": "application/json",
             },
         )
-        max_retries = 3
-        backoff_seconds = 1.0
+        max_retries = 1
+        effective_timeout = min(timeout, 1.2)
 
         for attempt in range(1, max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as response:
+                with urllib.request.urlopen(req, timeout=effective_timeout) as response:
                     if response.status != 200:
                         raise WindNetworkError(f"Open-Meteo returned non-200 HTTP status: {response.status}")
                     raw_data = response.read().decode("utf-8")
                     return json.loads(raw_data)
             except urllib.error.HTTPError as http_err:
+                self._offline_mode = True
                 if http_err.code == 429:
                     raise WindNetworkError(f"Open-Meteo rate limit (429): {http_err.reason}") from http_err
-                if http_err.code in (500, 502, 503, 504) and attempt < max_retries:
-                    time.sleep(0.2)
-                    continue
                 raise WindNetworkError(f"HTTP error ({http_err.code}) querying Open-Meteo: {http_err.reason}") from http_err
             except (urllib.error.URLError, TimeoutError) as net_err:
-                if attempt < max_retries:
-                    time.sleep(0.2)
-                    continue
+                self._offline_mode = True
                 raise WindNetworkError(f"Network error communicating with Open-Meteo: {net_err}") from net_err
             except json.JSONDecodeError as json_err:
                 raise WindResponseMalformedError(f"Invalid JSON payload returned by Open-Meteo: {json_err}") from json_err
@@ -315,6 +311,9 @@ class OpenMeteoWindProvider(WeatherProvider):
         """
         if not requests:
             return {}
+
+        if getattr(self, "_offline_mode", False):
+            raise WindNetworkError("Open-Meteo is currently in offline baseline mode.")
 
         results: Dict[Any, Tuple[float, float]] = {}
         uncached_reqs: List[Any] = []

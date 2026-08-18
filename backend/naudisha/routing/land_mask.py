@@ -150,6 +150,14 @@ _ARABIAN_PENINSULA = [
     [18.20, 56.50],   # Ras Madrakah
     [20.60, 58.90],   # Masirah Island coast
     [22.55, 59.80],   # Ras al Hadd (Easternmost Oman)
+    [22.58, 59.53],   # Sur Coast
+    [22.70, 59.38],   # Qalhat
+    [22.82, 59.25],   # Tiwi
+    [23.05, 59.10],   # Fins / Bimmah
+    [23.28, 58.98],   # Qurayyat Promontory
+    [23.33, 58.91],   # Ras Abu Da'ud (Key Headland Obstruction)
+    [23.42, 58.78],   # As Sifah Promontory
+    [23.52, 58.72],   # Bandar Khayran Fjord
     [23.60, 58.55],   # Muscat / Mutrah
     [24.40, 56.70],   # Sohar
     [24.75, 56.45],   # Shinas
