@@ -1,0 +1,9 @@
+{
+  "name": "naudisha-root",
+  "version": "0.3.0",
+  "private": true,
+  "scripts": {
+    "dev": "start.bat",
+    "start": "start.bat"
+  }
+}

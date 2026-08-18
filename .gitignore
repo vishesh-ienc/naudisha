@@ -59,6 +59,7 @@ dist/
 
 # IDE & editors
 .vscode/
+!.vscode/tasks.json
 .idea/
 *.swp
 *.swo
