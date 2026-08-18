@@ -109,11 +109,8 @@ class CopernicusMarineProvider(WeatherProvider, BatchCapableProvider):
         self.temporal_delta_hours = temporal_delta_hours
         self._reader_fn = reader_fn
         import os
-        from pathlib import Path
-        has_env_creds = bool(os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME") and os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD"))
-        cred_dir = Path.home() / ".copernicusmarine"
-        has_file_creds = cred_dir.exists() and any(cred_dir.iterdir())
-        self._offline_mode = False if (reader_fn is not None or has_env_creds or has_file_creds) else True
+        is_live_enabled = os.environ.get("COPERNICUS_LIVE") == "1"
+        self._offline_mode = False if (reader_fn is not None or is_live_enabled) else True
         self._cache: Dict[Tuple[float, float, str], EnvironmentalData] = {}
         self._bbox_df_cache: Dict[str, Tuple[float, float, float, float, Any, Any]] = {}
 

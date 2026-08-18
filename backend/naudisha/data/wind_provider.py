@@ -131,6 +131,9 @@ class OpenMeteoWindProvider(WeatherProvider):
         self.timeout = timeout
         self.enable_cache = enable_cache
         self._fetcher_fn = fetcher_fn
+        import os
+        is_live_enabled = os.environ.get("OPENMETEO_LIVE") == "1"
+        self._offline_mode = False if (fetcher_fn is not None or is_live_enabled) else True
         # In test mode with injected fetcher, use clean instance cache for isolation.
         # In production mode (no injected fetcher), use global cache to retain forecast across requests.
         self._cache = {} if fetcher_fn is not None else _GLOBAL_WIND_CACHE
